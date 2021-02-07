@@ -1,3 +1,3 @@
 module github.com/realzhangliu/socks5-go
 
-go 1.15
+go 1.12
