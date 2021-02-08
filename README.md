@@ -1,5 +1,6 @@
 # socks5-go
 [![Build Status](https://travis-ci.com/realzhangliu/socks5-go.svg?branch=dev)](https://travis-ci.com/realzhangliu/socks5-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/realzhangliu/socks5-go)](https://goreportcard.com/report/github.com/realzhangliu/socks5-go)
 
 Inspired by go-socks5,This package provides full functionality of [socks5 protocol](https://www.rfc-editor.org/rfc/pdfrfc/rfc1928.txt.pdf).
 
@@ -10,13 +11,13 @@ Feature
 =======
 The package has the following features:
 - [x] "No Auth" mode
-- [x] User/Password authentication
+- [x] User/Password authentication mode
 - [x] Support for the **CONNECT** command
 - [x] Support for the **BIND** command(require the client to accept connections from the server,like FTP etc.)
-- [x] Support for the **UDP ASSOCIATE** command
+- [ ] Support for the **UDP ASSOCIATE** command
 - [ ] Unit tests
 - [ ] Graceful configuration
-- [ ] Esay to use
+- [ ] Easy to use
 
 Example
 =======
