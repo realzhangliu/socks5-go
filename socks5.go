@@ -158,7 +158,6 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 	}
 }
 func HandleConn(conn net.Conn) {
-	defer conn.Close()
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
 	/*+----+----------+----------+
@@ -169,7 +168,7 @@ func HandleConn(conn net.Conn) {
 	*/
 	n, err := conn.Read(verByte)
 	if err != nil {
-		panic(err)
+		return
 	}
 	//VER
 	if uint(verByte[0]) != VERSION {
@@ -335,20 +334,20 @@ func HandleConn(conn net.Conn) {
 	case 3:
 		log.Println("UDP ASSOCIATE")
 		//dstPort is client expected port send UDP data to.
-		relayed, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
+		expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
 		if err != nil {
 			return
 		}
-		relayedCoon, err := net.ListenUDP("udp", relayed)
+		relaySerConn, err := net.ListenUDP("udp", expectedAddr)
 		if err != nil {
 			return
 		}
 		//indicate server UDP addr and port
 		laddr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
-		sendReply(conn, laddr.IP, relayed.Port, 0)
+		sendReply(conn, laddr.IP, relaySerConn.LocalAddr().(*net.UDPAddr).Port, 0)
 		//some authenticity
 		ctx, cancel := context.WithCancel(context.Background())
-		TransferUDPTraffic(relayedCoon, ctx)
+		TransferUDPTraffic(relaySerConn, ctx)
 		/*A UDP association terminates when the TCP connection that the UDP
 		ASSOCIATE request arrived on terminates.*/
 		_, err = conn.Read([]byte{})

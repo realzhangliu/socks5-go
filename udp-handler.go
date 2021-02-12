@@ -4,36 +4,36 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"time"
 )
 
-func AssemblyProxyHeader(data []byte, addr net.Addr) *bytes.Buffer {
+func AssemblyProxyHeader(data []byte, addr *net.UDPAddr) *bytes.Buffer {
 	proxyData := bytes.NewBuffer(nil)
-	udpAddr, err := net.ResolveUDPAddr("udp", addr.String())
-	if err != nil {
+	if addr == nil {
 		return nil
 	}
 	addrATYP := byte(0)
 	var addrBody []byte
 	switch {
-	case udpAddr.IP == nil:
+	case addr.IP == nil:
 		addrATYP = atypIPV4
 		addrBody = []byte{0, 0, 0, 0}
-	case udpAddr.IP.To4() != nil:
+	case addr.IP.To4() != nil:
 		addrATYP = atypIPV4
-		addrBody = []byte(udpAddr.IP.To4())
-	case udpAddr.IP.To16() != nil:
+		addrBody = []byte(addr.IP.To4())
+	case addr.IP.To16() != nil:
 		addrATYP = atypIPV6
-		addrBody = []byte(udpAddr.IP.To16())
+		addrBody = []byte(addr.IP.To16())
 	default:
 		fmt.Errorf("failed to format address")
 		return nil
 	}
 	proxyData.Write([]byte{0, 0, 0, addrATYP})
 	proxyData.Write(addrBody)
-	proxyData.Write([]byte{byte(udpAddr.Port >> 8)})
-	proxyData.Write([]byte{byte(udpAddr.Port & 0xff)})
+	proxyData.Write([]byte{byte(addr.Port >> 8)})
+	proxyData.Write([]byte{byte(addr.Port & 0xff)})
 	proxyData.Write(data)
 	return proxyData
 }
@@ -106,7 +106,7 @@ func TrimProxyHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort i
 		return
 	}
 	dstPort = int(b[0])<<8 + int(b[1])
-	fmt.Printf("dstIP:%v dstPort:%v\n", dstIP, dstPort)
+	log.Printf("dstIP:%v dstPort:%v\n", dstIP, dstPort)
 	return
 }
 func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
@@ -114,7 +114,8 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 	position := 0 //1-127
 	expires := time.Second * 5
 	//create remote relayed UDP conn
-	listenAddr := make(chan net.Addr)
+	rAddrChan := make(chan *net.UDPAddr)
+	cAddrChan := make(chan *net.UDPAddr, 1)
 	closeChan := make(chan struct{}, 2)
 
 	// remote -> relay -> client
@@ -124,7 +125,7 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 			case <-closeChan:
 				return
 			default:
-				remoteRelayConn, err := net.ListenUDP("udp", (<-listenAddr).(*net.UDPAddr))
+				remoteRelayConn, err := net.ListenUDP("udp", <-rAddrChan)
 				if err != nil {
 					return
 				}
@@ -135,9 +136,9 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 					//closeChan <- err
 					return
 				}
-				dataBuf := bytes.NewBuffer(b[:n])
-				bugWithHeader := AssemblyProxyHeader(dataBuf.Bytes(), relayConn.RemoteAddr())
-				relayConn.Write(bugWithHeader.Bytes())
+				clientAddr := <-cAddrChan
+				dataBuf := AssemblyProxyHeader(b[:n], clientAddr)
+				relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, clientAddr)
 			}
 		}
 	}()
@@ -150,10 +151,12 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 				return
 			default:
 				b := make([]byte, MAXUDPDATA)
-				n, _, err := relayConn.ReadFromUDP(b)
+				n, clientAddr, err := relayConn.ReadFromUDP(b)
 				if err != nil {
 					continue
 				}
+				cAddrChan <- clientAddr
+
 				dataBuf := bytes.NewBuffer(b[:n])
 				frag, dstIP, dstPort := TrimProxyHeader(dataBuf)
 				//drop any datagrams arriving from any source IP other than one recorded for the particular association.
@@ -175,7 +178,7 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 				if err != nil {
 					continue
 				}
-				listenAddr <- remoteConn.LocalAddr()
+				rAddrChan <- remoteConn.LocalAddr().(*net.UDPAddr)
 
 				//standalone
 				if frag == 0 {
