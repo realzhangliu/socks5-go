@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-func AssemblyProxyHeader(data []byte, addr *net.UDPAddr) *bytes.Buffer {
+//AssembleHeader assemble data with header
+func AssembleHeader(data []byte, addr *net.UDPAddr) *bytes.Buffer {
 	proxyData := bytes.NewBuffer(nil)
 	if addr == nil {
 		return nil
@@ -38,8 +39,8 @@ func AssemblyProxyHeader(data []byte, addr *net.UDPAddr) *bytes.Buffer {
 	return proxyData
 }
 
-//trim head
-func TrimProxyHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort int) {
+//TrimHeader trim socks5 header to send exact data to remote
+func TrimHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort int) {
 	// Each UDP datagram carries a UDP request   header with it:
 	/*
 		+----+------+------+----------+----------+----------+
@@ -106,10 +107,12 @@ func TrimProxyHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort i
 		return
 	}
 	dstPort = int(b[0])<<8 + int(b[1])
-	log.Printf("dstIP:%v dstPort:%v\n", dstIP, dstPort)
+	//log.Printf("dstIP:%v dstPort:%v\n", dstIP, dstPort)
 	return
 }
-func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
+
+//UDPTransport handle UDP traffic
+func UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 	reassemblyQueue := make([]byte, 0)
 	position := 0 //1-127
 	expires := time.Second * 5
@@ -125,7 +128,8 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 			case <-closeChan:
 				return
 			default:
-				remoteRelayConn, err := net.ListenUDP("udp", <-rAddrChan)
+				remoteAddr := <-rAddrChan
+				remoteRelayConn, err := net.ListenUDP("udp", remoteAddr)
 				if err != nil {
 					return
 				}
@@ -137,8 +141,9 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 					return
 				}
 				clientAddr := <-cAddrChan
-				dataBuf := AssemblyProxyHeader(b[:n], clientAddr)
+				dataBuf := AssembleHeader(b[:n], clientAddr)
 				relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, clientAddr)
+				log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", remoteAddr, n, clientAddr)
 			}
 		}
 	}()
@@ -158,7 +163,7 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 				cAddrChan <- clientAddr
 
 				dataBuf := bytes.NewBuffer(b[:n])
-				frag, dstIP, dstPort := TrimProxyHeader(dataBuf)
+				frag, dstIP, dstPort := TrimHeader(dataBuf)
 				//drop any datagrams arriving from any source IP other than one recorded for the particular association.
 				//todo
 
@@ -190,6 +195,7 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 						relayConn.SetReadDeadline(time.Time{})
 					}
 					remoteConn.Write(dataBuf.Bytes())
+					log.Printf("[UDP]client:%v send %v bytes -> remote:%v\n", relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
 					continue
 				}
 
@@ -197,6 +203,7 @@ func TransferUDPTraffic(relayConn *net.UDPConn, ctx context.Context) {
 				if int(frag) < position {
 					//send previous datagrams
 					remoteConn.Write(reassemblyQueue)
+					log.Printf("[UDP]client:%v send %v bytes -> remote:%v\n", relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
 					//reinitialize
 					reassemblyQueue = make([]byte, 0)
 					position = 0

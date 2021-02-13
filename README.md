@@ -14,7 +14,7 @@ The package has the following features:
 - [x] User/Password authentication mode
 - [x] Support for the **CONNECT** command
 - [x] Support for the **BIND** command(require the client to accept connections from the server,like FTP etc.)
-- [ ] Support for the **UDP ASSOCIATE** command
+- [x] Support for the **UDP ASSOCIATE** command
 - [ ] Unit tests
 - [ ] Graceful configuration
 - [ ] Easy to use

@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
+	"strings"
+	"time"
 )
 
 /*
@@ -97,24 +98,53 @@ func VerifyPassword(conn net.Conn) bool {
 	return true
 }
 func TransferTraffic(clientConn, remoteConn net.Conn, closeChan chan error) {
+	//client -> relay ->remote
 	go func() {
-		n, err := io.Copy(remoteConn, clientConn)
-		log.Printf("client:%v send %v bytes -> remote:%v\n", clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
-		remoteConn.Close()
-		closeChan <- err
+		for {
+			b := make([]byte, 1024)
+			n, err := clientConn.Read(b)
+			if strings.Contains(err.Error(), "EOF") {
+				time.Sleep(time.Second)
+				continue
+			}
+			if err != nil {
+				clientConn.Close()
+				closeChan <- err
+			}
+			remoteConn.Write(b[:n])
+			//n, err := io.Copy(remoteConn, clientConn)
+			log.Printf("[TCP]client:%v send %v bytes -> remote:%v\n", clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
+		}
+
 	}()
+	//remote -> relay -> client
 	go func() {
-		n, err := io.Copy(clientConn, remoteConn)
-		log.Printf("remote:%v send %v bytes -> client:%v\n", remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
-		clientConn.Close()
-		closeChan <- err
+		for {
+			b := make([]byte, 1024)
+			n, err := remoteConn.Read(b)
+			if strings.Contains(err.Error(), "EOF") {
+				time.Sleep(time.Second)
+				continue
+			}
+			if err != nil {
+				remoteConn.Close()
+				closeChan <- err
+			}
+			clientConn.Write(b[:n])
+			//n, err := io.Copy(clientConn, remoteConn)
+			log.Printf("[TCP]remote:%v send %v bytes -> client:%v\n", remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
+			if err != nil {
+				clientConn.Close()
+				closeChan <- err
+			}
+		}
 	}()
 }
 func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 	//address types
 	switch atyp {
 	case int(atypIPV4):
-		log.Println("IP V4 address")
+		log.Printf("ADDRESS TYPE: IP V4 address <- %v\n", conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 4)
 		n, err := conn.Read(dstAddrBytes)
 		if err != nil || n == 0 {
@@ -123,7 +153,7 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		d := net.IP(dstAddrBytes)
 		return &d
 	case int(atypFQDN):
-		log.Println("DOMAINNAME")
+		log.Printf("ADDRESS TYPE: DOMAINNAME <- %v\n", conn.RemoteAddr())
 		hostLenByte := make([]byte, 1)
 		n, err := conn.Read(hostLenByte)
 		if err != nil || n == 0 {
@@ -145,7 +175,7 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		}
 		return &ipAddr.IP
 	case int(atypIPV6):
-		log.Println("IP V6 address")
+		log.Printf("ADDRESS TYPE: IP V6 address <- %v\n", conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 16)
 		n, err := conn.Read(dstAddrBytes)
 		if err != nil || n == 0 {
@@ -157,7 +187,8 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		panic(atyp)
 	}
 }
-func HandleConn(conn net.Conn) {
+func HandleRequest(conn net.Conn) {
+	log.Printf("========================================")
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
 	/*+----+----------+----------+
@@ -204,22 +235,15 @@ func HandleConn(conn net.Conn) {
 	//METHOD
 	for _, v := range methods {
 		if v == 0 {
-			log.Println("NO AUTHEN")
+			log.Printf("AUTHENTICATION:NO AUTHEN <- %v\n", conn.RemoteAddr())
 			b = append(b, byte(0))
 			conn.Write(b)
+			log.Printf("REPLAY  -> %v\n", conn.RemoteAddr())
 			break
-		}
-		//GSSAPI
-		//TODO
-		if v == 1 {
-			log.Println("GSSAPI")
-			b = append(b, byte(255))
-			conn.Write(b)
-			return
 		}
 		//USERNAME/PASSWORD
 		if v == 2 {
-			log.Println("USERNAME/PASSWORD")
+			log.Printf("AUTHENTICATION:USERNAME/PASSWORD  <- %v\n", conn.RemoteAddr())
 			b = append(b, byte(2))
 			//reply
 			conn.Write(b)
@@ -237,6 +261,7 @@ func HandleConn(conn net.Conn) {
 			if err != nil || n == 0 {
 				return
 			}
+			log.Printf("REPLY  -> %v\n", conn.RemoteAddr())
 			break
 		}
 		b = append(b, ErrMethod)
@@ -256,7 +281,7 @@ func HandleConn(conn net.Conn) {
 	if err != nil || n == 0 {
 		return
 	}
-	ver, cmd, _, atyp := int(headBytes[0]), int(headBytes[1]), int(headBytes[2]), int(headBytes[3])
+	ver, cmd, atyp := int(headBytes[0]), int(headBytes[1]), int(headBytes[3])
 	if ver != VERSION {
 		return
 	}
@@ -279,18 +304,16 @@ func HandleConn(conn net.Conn) {
 	//command
 	switch cmd {
 	case 1:
-		log.Println("CONNECT")
+		log.Printf("COMMAND: CONNECT <- %v\n", conn.RemoteAddr())
 		addr := fmt.Sprintf("%v:%v", dstIP.String(), dstPort)
 		targetConn, err := net.Dial("tcp", addr)
 		if err != nil {
 			b = append(b, byte(1))
 			conn.Write(b)
-			os.Exit(1)
+			return
 		}
 		serverAddr, _ := net.ResolveTCPAddr("tcp", targetConn.LocalAddr().String())
-
 		sendReply(conn, serverAddr.IP, serverAddr.Port, 0)
-
 		closeChan := make(chan error, 2)
 		TransferTraffic(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
@@ -301,7 +324,7 @@ func HandleConn(conn net.Conn) {
 		}
 		return
 	case 2:
-		log.Println("BIND")
+		log.Printf("COMMAND: BIND <- %v\n", conn.RemoteAddr())
 		//BIND之前需要有CONNECT连接验证
 		//建立监听 给目标服务用 例如 FTP 的数据传输
 		listener, err := net.Listen("tcp", ":0")
@@ -332,7 +355,7 @@ func HandleConn(conn net.Conn) {
 		}
 		return
 	case 3:
-		log.Println("UDP ASSOCIATE")
+		log.Printf("COMMAND: UDP ASSOCIATE <- %v\n", conn.RemoteAddr())
 		//dstPort is client expected port send UDP data to.
 		expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
 		if err != nil {
@@ -347,7 +370,7 @@ func HandleConn(conn net.Conn) {
 		sendReply(conn, laddr.IP, relaySerConn.LocalAddr().(*net.UDPAddr).Port, 0)
 		//some authenticity
 		ctx, cancel := context.WithCancel(context.Background())
-		TransferUDPTraffic(relaySerConn, ctx)
+		UDPTransport(relaySerConn, ctx)
 		/*A UDP association terminates when the TCP connection that the UDP
 		ASSOCIATE request arrived on terminates.*/
 		_, err = conn.Read([]byte{})
@@ -355,8 +378,7 @@ func HandleConn(conn net.Conn) {
 	}
 }
 
-//records for udp clients as authenticate condition
-//todo
+//多次相同请求的处理
 
 func Server() {
 	log.SetFlags(log.LstdFlags)
@@ -369,6 +391,6 @@ func Server() {
 		if err != nil {
 			os.Exit(1)
 		}
-		go HandleConn(conn)
+		go HandleRequest(conn)
 	}
 }
