@@ -1,4 +1,4 @@
-package main
+package socks5
 
 import (
 	"context"
@@ -29,7 +29,7 @@ const (
 
 var ErrMethod = byte(255)
 
-func sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) error {
+func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) error {
 	addrATYP := byte(0)
 	var addrBody []byte
 	switch {
@@ -56,7 +56,7 @@ func sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) error {
 	conn.Write(msg)
 	return nil
 }
-func VerifyPassword(conn net.Conn) bool {
+func (s *Socks5Conn) VerifyPassword(conn net.Conn) bool {
 	verByte := make([]byte, 1)
 	n, err := conn.Read(verByte)
 	if err != nil || n == 0 {
@@ -97,23 +97,20 @@ func VerifyPassword(conn net.Conn) bool {
 
 	return true
 }
-func TransferTraffic(clientConn, remoteConn net.Conn, closeChan chan error) {
+func (s *Socks5Conn) TransferTraffic(clientConn, remoteConn net.Conn, closeChan chan error) {
 	//client -> relay ->remote
 	go func() {
 		for {
 			b := make([]byte, 1024)
 			n, err := clientConn.Read(b)
-			if strings.Contains(err.Error(), "EOF") {
-				time.Sleep(time.Second)
-				continue
-			}
 			if err != nil {
-				clientConn.Close()
+				log.Printf("[ID:%v]%v", s.ID(), err)
 				closeChan <- err
+				clientConn.Close()
+				return
 			}
 			remoteConn.Write(b[:n])
-			//n, err := io.Copy(remoteConn, clientConn)
-			log.Printf("[TCP]client:%v send %v bytes -> remote:%v\n", clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
+			log.Printf("[ID:%v][TCP]client:%v send %v bytes -> remote:%v\n", s.ID(), clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
 		}
 
 	}()
@@ -122,29 +119,26 @@ func TransferTraffic(clientConn, remoteConn net.Conn, closeChan chan error) {
 		for {
 			b := make([]byte, 1024)
 			n, err := remoteConn.Read(b)
-			if strings.Contains(err.Error(), "EOF") {
-				time.Sleep(time.Second)
-				continue
-			}
 			if err != nil {
-				remoteConn.Close()
+				if strings.Contains(err.Error(), "EOF") {
+					time.Sleep(time.Second)
+					continue
+				}
+				log.Printf("[ID:%v]%v", s.ID(), err)
 				closeChan <- err
+				remoteConn.Close()
+				return
 			}
 			clientConn.Write(b[:n])
-			//n, err := io.Copy(clientConn, remoteConn)
-			log.Printf("[TCP]remote:%v send %v bytes -> client:%v\n", remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
-			if err != nil {
-				clientConn.Close()
-				closeChan <- err
-			}
+			log.Printf("[ID:%v][TCP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
 		}
 	}()
 }
-func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
+func (s *Socks5Conn) GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 	//address types
 	switch atyp {
 	case int(atypIPV4):
-		log.Printf("ADDRESS TYPE: IP V4 address <- %v\n", conn.RemoteAddr())
+		log.Printf("[ID:%v]ADDRESS TYPE: IP V4 address <- %v\n", s.ID(), conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 4)
 		n, err := conn.Read(dstAddrBytes)
 		if err != nil || n == 0 {
@@ -153,7 +147,7 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		d := net.IP(dstAddrBytes)
 		return &d
 	case int(atypFQDN):
-		log.Printf("ADDRESS TYPE: DOMAINNAME <- %v\n", conn.RemoteAddr())
+		log.Printf("[ID:%v]ADDRESS TYPE: DOMAINNAME <- %v\n", s.ID(), conn.RemoteAddr())
 		hostLenByte := make([]byte, 1)
 		n, err := conn.Read(hostLenByte)
 		if err != nil || n == 0 {
@@ -175,7 +169,7 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		}
 		return &ipAddr.IP
 	case int(atypIPV6):
-		log.Printf("ADDRESS TYPE: IP V6 address <- %v\n", conn.RemoteAddr())
+		log.Printf("[ID:%v]ADDRESS TYPE: IP V6 address <- %v\n", s.ID(), conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 16)
 		n, err := conn.Read(dstAddrBytes)
 		if err != nil || n == 0 {
@@ -187,8 +181,12 @@ func GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		panic(atyp)
 	}
 }
-func HandleRequest(conn net.Conn) {
-	log.Printf("========================================")
+func (s *Socks5Conn) HandleRequest(conn net.Conn) {
+	if v, ok := conn.(*net.TCPConn); ok {
+		s.tcpConn = v
+	} else {
+		return
+	}
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
 	/*+----+----------+----------+
@@ -235,22 +233,22 @@ func HandleRequest(conn net.Conn) {
 	//METHOD
 	for _, v := range methods {
 		if v == 0 {
-			log.Printf("AUTHENTICATION:NO AUTHEN <- %v\n", conn.RemoteAddr())
+			log.Printf("[ID:%v]AUTHENTICATION:NO AUTHEN <- %v\n", s.ID(), conn.RemoteAddr())
 			b = append(b, byte(0))
 			conn.Write(b)
-			log.Printf("REPLAY  -> %v\n", conn.RemoteAddr())
+			log.Printf("[ID:%v]REPLY NO AUTHEN METHOD OK -> %v\n", s.ID(), conn.RemoteAddr())
 			break
 		}
 		//USERNAME/PASSWORD
 		if v == 2 {
-			log.Printf("AUTHENTICATION:USERNAME/PASSWORD  <- %v\n", conn.RemoteAddr())
+			log.Printf("[ID:%v]AUTHENTICATION:USERNAME/PASSWORD  <- %v\n", s.ID(), conn.RemoteAddr())
 			b = append(b, byte(2))
 			//reply
 			conn.Write(b)
 			closeBytes := make([]byte, 0)
 			closeBytes = append(closeBytes, byte(1))
 			//verify
-			if !VerifyPassword(conn) {
+			if !s.VerifyPassword(conn) {
 				closeBytes = append(closeBytes, byte(1))
 				conn.Write(closeBytes)
 				os.Exit(1)
@@ -261,7 +259,7 @@ func HandleRequest(conn net.Conn) {
 			if err != nil || n == 0 {
 				return
 			}
-			log.Printf("REPLY  -> %v\n", conn.RemoteAddr())
+			log.Printf("[ID:%v]REPLY USERNAME/PASSWORD METHOD OK -> %v\n", s.ID(), conn.RemoteAddr())
 			break
 		}
 		b = append(b, ErrMethod)
@@ -285,7 +283,7 @@ func HandleRequest(conn net.Conn) {
 	if ver != VERSION {
 		return
 	}
-	dstIP := GetIPWithATYP(conn, atyp)
+	dstIP := s.GetIPWithATYP(conn, atyp)
 	dstPortBytes := make([]byte, 2)
 	n, err = conn.Read(dstPortBytes)
 	if err != nil || n == 0 {
@@ -304,18 +302,20 @@ func HandleRequest(conn net.Conn) {
 	//command
 	switch cmd {
 	case 1:
-		log.Printf("COMMAND: CONNECT <- %v\n", conn.RemoteAddr())
-		addr := fmt.Sprintf("%v:%v", dstIP.String(), dstPort)
-		targetConn, err := net.Dial("tcp", addr)
+		log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
+		targetConn, err := net.DialTCP("tcp", nil, &net.TCPAddr{
+			IP:   *dstIP,
+			Port: dstPort,
+			Zone: "",
+		})
 		if err != nil {
 			b = append(b, byte(1))
 			conn.Write(b)
 			return
 		}
-		serverAddr, _ := net.ResolveTCPAddr("tcp", targetConn.LocalAddr().String())
-		sendReply(conn, serverAddr.IP, serverAddr.Port, 0)
+		s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
 		closeChan := make(chan error, 2)
-		TransferTraffic(conn, targetConn, closeChan)
+		s.TransferTraffic(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
 			e := <-closeChan
 			if e != nil {
@@ -324,29 +324,24 @@ func HandleRequest(conn net.Conn) {
 		}
 		return
 	case 2:
-		log.Printf("COMMAND: BIND <- %v\n", conn.RemoteAddr())
+		log.Printf("[ID:%v]COMMAND: BIND <- %v\n", s.ID(), conn.RemoteAddr())
 		//BIND之前需要有CONNECT连接验证
 		//建立监听 给目标服务用 例如 FTP 的数据传输
 		listener, err := net.Listen("tcp", ":0")
 		if err != nil {
 			return
 		}
-		serverAddr, err := net.ResolveTCPAddr("tcp", listener.Addr().String())
-		if err != nil {
-			return
-		}
 		//first reply
-		sendReply(conn, serverAddr.IP, serverAddr.Port, 0)
+		s.sendReply(conn, listener.Addr().(*net.TCPAddr).IP, listener.Addr().(*net.TCPAddr).Port, 0)
 		//server -> client
 		targetConn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		remoteAddr, _ := net.ResolveTCPAddr("tcp", targetConn.RemoteAddr().String())
 		//sec reply
-		sendReply(conn, remoteAddr.IP, remoteAddr.Port, 0)
+		s.sendReply(conn, targetConn.RemoteAddr().(*net.TCPAddr).IP, targetConn.RemoteAddr().(*net.TCPAddr).Port, 0)
 		closeChan := make(chan error, 2)
-		TransferTraffic(conn, targetConn, closeChan)
+		s.TransferTraffic(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
 			e := <-closeChan
 			if e != nil {
@@ -355,7 +350,7 @@ func HandleRequest(conn net.Conn) {
 		}
 		return
 	case 3:
-		log.Printf("COMMAND: UDP ASSOCIATE <- %v\n", conn.RemoteAddr())
+		log.Printf("[ID:%v]COMMAND: UDP ASSOCIATE <- %v\n", s.ID(), conn.RemoteAddr())
 		//dstPort is client expected port send UDP data to.
 		expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
 		if err != nil {
@@ -366,15 +361,17 @@ func HandleRequest(conn net.Conn) {
 			return
 		}
 		//indicate server UDP addr and port
-		laddr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
-		sendReply(conn, laddr.IP, relaySerConn.LocalAddr().(*net.UDPAddr).Port, 0)
+		s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, relaySerConn.LocalAddr().(*net.UDPAddr).Port, 0)
+		log.Printf("[ID:%v][UDP] RELAY BIND PORT: %v \n", s.ID(), relaySerConn.LocalAddr().(*net.UDPAddr).Port)
 		//some authenticity
-		ctx, cancel := context.WithCancel(context.Background())
-		UDPTransport(relaySerConn, ctx)
+		ctx, _ := context.WithCancel(context.Background())
+		s.UDPTransport(relaySerConn, ctx)
 		/*A UDP association terminates when the TCP connection that the UDP
 		ASSOCIATE request arrived on terminates.*/
-		_, err = conn.Read([]byte{})
-		cancel()
+		//_, err = conn.Read([]byte{0})
+		//if err != nil {
+		//	cancel()
+		//}
 	}
 }
 
@@ -391,6 +388,7 @@ func Server() {
 		if err != nil {
 			os.Exit(1)
 		}
-		go HandleRequest(conn)
+		s := new(Socks5Conn)
+		go s.HandleRequest(conn)
 	}
 }

@@ -17,7 +17,7 @@ The package has the following features:
 - [x] Support for the **UDP ASSOCIATE** command
 - [ ] Unit tests
 - [ ] Graceful configuration
-- [ ] Easy to use
+- [ ] Support for  Web UI
 
 Example
 =======
