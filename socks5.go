@@ -3,10 +3,12 @@ package socks5
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,7 +31,7 @@ const (
 
 var ErrMethod = byte(255)
 
-func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) error {
+func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) {
 	addrATYP := byte(0)
 	var addrBody []byte
 	switch {
@@ -43,7 +45,7 @@ func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp 
 		addrATYP = atypIPV6
 		addrBody = []byte(addrIP.To16())
 	default:
-		return fmt.Errorf("failed to format address")
+		log.Printf("[ID:%v]failed to format address.", s.ID())
 	}
 	msg := make([]byte, 0)
 	msg = append(msg, byte(VERSION))
@@ -53,8 +55,10 @@ func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp 
 	msg = append(msg, addrBody...)
 	msg = append(msg, byte(addrPort>>8))
 	msg = append(msg, byte(addrPort&0xff))
-	conn.Write(msg)
-	return nil
+	_, err := conn.Write(msg)
+	if err != nil {
+		log.Printf("[ID:%v]%v", err)
+	}
 }
 func (s *Socks5Conn) VerifyPassword(conn net.Conn) bool {
 	verByte := make([]byte, 1)
@@ -97,7 +101,7 @@ func (s *Socks5Conn) VerifyPassword(conn net.Conn) bool {
 
 	return true
 }
-func (s *Socks5Conn) TransferTraffic(clientConn, remoteConn net.Conn, closeChan chan error) {
+func (s *Socks5Conn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
 	//client -> relay ->remote
 	go func() {
 		for {
@@ -181,12 +185,7 @@ func (s *Socks5Conn) GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
 		panic(atyp)
 	}
 }
-func (s *Socks5Conn) HandleRequest(conn net.Conn) {
-	if v, ok := conn.(*net.TCPConn); ok {
-		s.tcpConn = v
-	} else {
-		return
-	}
+func (s *Socks5Conn) ServConn(conn net.Conn) {
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
 	/*+----+----------+----------+
@@ -315,7 +314,7 @@ func (s *Socks5Conn) HandleRequest(conn net.Conn) {
 		}
 		s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
 		closeChan := make(chan error, 2)
-		s.TransferTraffic(conn, targetConn, closeChan)
+		s.TCPTransport(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
 			e := <-closeChan
 			if e != nil {
@@ -341,7 +340,7 @@ func (s *Socks5Conn) HandleRequest(conn net.Conn) {
 		//sec reply
 		s.sendReply(conn, targetConn.RemoteAddr().(*net.TCPAddr).IP, targetConn.RemoteAddr().(*net.TCPAddr).Port, 0)
 		closeChan := make(chan error, 2)
-		s.TransferTraffic(conn, targetConn, closeChan)
+		s.TCPTransport(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
 			e := <-closeChan
 			if e != nil {
@@ -352,43 +351,66 @@ func (s *Socks5Conn) HandleRequest(conn net.Conn) {
 	case 3:
 		log.Printf("[ID:%v]COMMAND: UDP ASSOCIATE <- %v\n", s.ID(), conn.RemoteAddr())
 		//dstPort is client expected port send UDP data to.
-		expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
-		if err != nil {
-			return
+		if s.server.Socks5UDPserver != nil {
+			s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, s.server.udpServer.LocalAddr().(*net.UDPAddr).Port, 0)
+			log.Printf("[ID:%v][UDP] REPLY ALREADY BIND PORT: %v \n", s.ID(), s.server.udpServer.LocalAddr().(*net.UDPAddr).Port)
+		} else {
+			expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
+			if err != nil {
+				return
+			}
+			//it's for receiving data from client
+			relayConn, err := net.ListenUDP("udp", expectedAddr)
+			if err != nil {
+				return
+			}
+			s.server.Socks5UDPserver = &Socks5UDPserver{
+				udpServer:     relayConn,
+				UDPRequestMap: make(map[string]*UDPRequest),
+			}
+
+			//indicate server UDP addr and port
+			s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, relayConn.LocalAddr().(*net.UDPAddr).Port, 0)
+			log.Printf("[ID:%v][UDP] REPLY BIND PORT: %v \n", s.ID(), relayConn.LocalAddr().(*net.UDPAddr).Port)
+
+			//some authenticity
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			s.UDPTransport(relayConn, ctx)
+			/*A UDP association terminates when the TCP connection that the UDP
+			ASSOCIATE request arrived on terminates.*/
+			for {
+				conn.SetReadDeadline(time.Now())
+				if _, err := conn.Read([]byte{}); err == io.EOF {
+					cancelFunc()
+					break
+				} else {
+					conn.SetReadDeadline(time.Time{})
+				}
+				time.Sleep(time.Second * 10)
+			}
 		}
-		relaySerConn, err := net.ListenUDP("udp", expectedAddr)
-		if err != nil {
-			return
-		}
-		//indicate server UDP addr and port
-		s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, relaySerConn.LocalAddr().(*net.UDPAddr).Port, 0)
-		log.Printf("[ID:%v][UDP] RELAY BIND PORT: %v \n", s.ID(), relaySerConn.LocalAddr().(*net.UDPAddr).Port)
-		//some authenticity
-		ctx, _ := context.WithCancel(context.Background())
-		s.UDPTransport(relaySerConn, ctx)
-		/*A UDP association terminates when the TCP connection that the UDP
-		ASSOCIATE request arrived on terminates.*/
-		//_, err = conn.Read([]byte{0})
-		//if err != nil {
-		//	cancel()
-		//}
 	}
 }
 
 //多次相同请求的处理
-
-func Server() {
+func Launch() {
 	log.SetFlags(log.LstdFlags)
 	listener, err := net.Listen("tcp", ":1090")
 	if err != nil {
 		os.Exit(1)
 	}
+	ser := &Server{}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			os.Exit(1)
 		}
-		s := new(Socks5Conn)
-		go s.HandleRequest(conn)
+		s := &Socks5Conn{
+			server:  ser,
+			tcpConn: conn.(*net.TCPConn),
+			lock:    sync.RWMutex{},
+		}
+		ser.conn = append(ser.conn, s)
+		go s.ServConn(conn)
 	}
 }

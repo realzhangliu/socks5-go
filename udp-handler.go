@@ -113,38 +113,34 @@ func TrimHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort int) {
 
 //UDPTransport handle UDP traffic
 func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
-	reassemblyQueue := make([]byte, 0)
-	position := 0 //1-127
+	//reassemblyQueue := make([]byte, 0)
 	expires := time.Second * 5
 	//create remote relayed UDP conn
-	rAddrChan := make(chan *net.UDPAddr)
-	cAddrChan := make(chan *net.UDPAddr, 1)
+	//rAddrChan := make(chan *net.UDPAddr)
+	//cAddrChan := make(chan *net.UDPAddr, 1)
 	closeChan := make(chan struct{}, 2)
 
+	UDPRequestChan := make(chan *UDPRequest, 20)
 	// remote -> relay -> client
 	go func() {
-		for {
-			select {
-			case <-closeChan:
+		for v := range UDPRequestChan {
+			//remoteListenAddr := <-rAddrChan
+			remoteRelayConn, err := net.ListenUDP("udp", v.remoteListenAddr)
+			if err != nil {
 				return
-			default:
-				remoteAddr := <-rAddrChan
-				remoteRelayConn, err := net.ListenUDP("udp", remoteAddr)
-				if err != nil {
-					return
-				}
-				//assemble proxy header
-				b := make([]byte, MAXUDPDATA)
-				n, _, err := remoteRelayConn.ReadFromUDP(b)
-				if err != nil {
-					//closeChan <- err
-					return
-				}
-				clientAddr := <-cAddrChan
-				dataBuf := AssembleHeader(b[:n], clientAddr)
-				relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, clientAddr)
-				log.Printf("[ID:%v][UDP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteAddr, n, clientAddr)
 			}
+			//assemble proxy header
+			b := make([]byte, MAXUDPDATA)
+			n, _, err := remoteRelayConn.ReadFromUDP(b)
+			if err != nil {
+				//closeChan <- err
+				return
+			}
+			//clientSrcAddr := <-cAddrChan
+			dataBuf := AssembleHeader(b[:n], v.clientSrcAddr)
+			relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientSrcAddr)
+			log.Printf("[ID:%v][UDP]remote:%v send %v bytes -> client:%v\n", s.ID(), v.remoteListenAddr, n, v.clientSrcAddr)
+			delete(s.server.UDPRequestMap, v.clientSrcAddr.String())
 		}
 	}()
 
@@ -160,38 +156,47 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 				if err != nil {
 					continue
 				}
-				cAddrChan <- clientAddr
+				//cAddrChan <- clientSrcAddr
 
 				dataBuf := bytes.NewBuffer(b[:n])
 				frag, dstIP, dstPort := TrimHeader(dataBuf)
-				//drop any datagrams arriving from any source IP other than one recorded for the particular association.
-				//todo
 
-				if int(frag) > position {
-					position = int(frag)
-					//save data
-					reassemblyQueue = append(reassemblyQueue, dataBuf.Bytes()...)
-					continue
-				}
-
-				//udp dial
-				remoteConn, err := net.DialUDP("udp", nil, &net.UDPAddr{
+				remoteAddr := &net.UDPAddr{
 					IP:   *dstIP,
 					Port: dstPort,
 					Zone: "",
-				})
+				}
+				//udp dial
+				remoteConn, err := net.DialUDP("udp", nil, remoteAddr)
 				if err != nil {
 					continue
 				}
-				rAddrChan <- remoteConn.LocalAddr().(*net.UDPAddr)
+				//rAddrChan <- remoteConn.LocalAddr().(*net.UDPAddr)
+				//if request is existed
+				if s.server.UDPRequestMap[clientAddr.String()] == nil {
+					s.server.UDPRequestMap[clientAddr.String()] = &UDPRequest{
+						clientSrcAddr:    clientAddr,
+						remoteListenAddr: remoteConn.LocalAddr().(*net.UDPAddr),
+						reassemblyQueue:  []byte{},
+						position:         0,
+					}
+				}
+				request := s.server.UDPRequestMap[clientAddr.String()]
+				UDPRequestChan <- request
 
+				if int(frag) > request.position {
+					request.position = int(frag)
+					//save data
+					request.reassemblyQueue = append(request.reassemblyQueue, dataBuf.Bytes()...)
+					continue
+				}
 				//standalone
 				if frag == 0 {
-					if len(reassemblyQueue) > 0 {
-						remoteConn.Write(reassemblyQueue)
+					if len(request.reassemblyQueue) > 0 {
+						remoteConn.Write(request.reassemblyQueue)
 						//reinitialize
-						reassemblyQueue = make([]byte, 0)
-						position = 0
+						request.reassemblyQueue = []byte{}
+						request.position = 0
 						relayConn.SetReadDeadline(time.Time{})
 					}
 					remoteConn.Write(dataBuf.Bytes())
@@ -200,13 +205,13 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 				}
 
 				//begin to handle  a new datagrams
-				if int(frag) < position {
+				if int(frag) < request.position {
 					//send previous datagrams
-					remoteConn.Write(reassemblyQueue)
+					remoteConn.Write(request.reassemblyQueue)
 					log.Printf("[ID:%v][UDP]client:%v send %v bytes -> remote:%v\n", s.ID(), relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
 					//reinitialize
-					reassemblyQueue = make([]byte, 0)
-					position = 0
+					request.reassemblyQueue = []byte{}
+					request.position = 0
 					relayConn.SetReadDeadline(time.Time{})
 
 					//set timeout
@@ -216,9 +221,9 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 						continue
 					}
 					//save data
-					position = int(frag)
+					request.position = int(frag)
 					//save data
-					reassemblyQueue = append(reassemblyQueue, dataBuf.Bytes()...)
+					request.reassemblyQueue = append(request.reassemblyQueue, dataBuf.Bytes()...)
 				}
 			}
 		}
