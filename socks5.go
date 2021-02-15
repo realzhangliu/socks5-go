@@ -230,7 +230,6 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 	}
 }
 
-//多次相同请求的处理
 func Launch() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	socks5Srv := NewSocks5Server()
