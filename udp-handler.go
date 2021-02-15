@@ -2,7 +2,6 @@ package socks5
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log"
 	"net"
@@ -112,37 +111,44 @@ func TrimHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort int) {
 }
 
 //UDPTransport handle UDP traffic
-func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
+func (s *Server) UDPTransport(relayConn *net.UDPConn) {
 	//reassemblyQueue := make([]byte, 0)
-	expires := time.Second * 5
+	//expires := time.Second * 5
 	//create remote relayed UDP conn
 	//rAddrChan := make(chan *net.UDPAddr)
 	//cAddrChan := make(chan *net.UDPAddr, 1)
 	closeChan := make(chan struct{}, 2)
 
-	UDPRequestChan := make(chan *UDPRequest, 20)
+	UDPRequestChan := make(chan *UDPRequest)
 	// remote -> relay -> client
-	go func() {
+	_ = func() {
 		for v := range UDPRequestChan {
-			//remoteListenAddr := <-rAddrChan
-			remoteRelayConn, err := net.ListenUDP("udp", v.remoteListenAddr)
-			if err != nil {
-				return
-			}
-			//assemble proxy header
-			b := make([]byte, MAXUDPDATA)
-			n, _, err := remoteRelayConn.ReadFromUDP(b)
-			if err != nil {
-				//closeChan <- err
-				return
-			}
-			//clientSrcAddr := <-cAddrChan
-			dataBuf := AssembleHeader(b[:n], v.clientSrcAddr)
-			relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientSrcAddr)
-			log.Printf("[ID:%v][UDP]remote:%v send %v bytes -> client:%v\n", s.ID(), v.remoteListenAddr, n, v.clientSrcAddr)
-			delete(s.server.UDPRequestMap, v.clientSrcAddr.String())
+			vv := v
+			go func(v *UDPRequest) {
+				//remoteListenAddr := <-rAddrChan
+				remoteRelayConn, err := net.ListenUDP("udp", v.remoteListenAddr)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				defer remoteRelayConn.Close()
+				remoteRelayConn.SetReadDeadline(time.Now().Add(time.Second * 5))
+				//assemble proxy header
+				b := make([]byte, MAXUDPDATA)
+				n, _, err := remoteRelayConn.ReadFromUDP(b)
+				if err != nil {
+					//closeChan <- err
+					log.Println(err)
+					return
+				}
+				//clientSrcAddr := <-cAddrChan
+				dataBuf := AssembleHeader(b[:n], v.clientSrcAddr)
+				relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientSrcAddr)
+				log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", v.remoteListenAddr, n, v.clientSrcAddr)
+				delete(s.UDPRequestMap, v.clientSrcAddr.String())
+			}(vv)
 		}
-	}()
+	}
 
 	// client -> relay -> remote
 	go func() {
@@ -173,16 +179,45 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 				}
 				//rAddrChan <- remoteConn.LocalAddr().(*net.UDPAddr)
 				//if request is existed
-				if s.server.UDPRequestMap[clientAddr.String()] == nil {
-					s.server.UDPRequestMap[clientAddr.String()] = &UDPRequest{
+				if s.UDPRequestMap[remoteAddr.String()] == nil {
+					s.UDPRequestMap[remoteAddr.String()] = &UDPRequest{
 						clientSrcAddr:    clientAddr,
 						remoteListenAddr: remoteConn.LocalAddr().(*net.UDPAddr),
+						remoteAddr:       remoteAddr,
 						reassemblyQueue:  []byte{},
 						position:         0,
 					}
+				} else {
+					continue
 				}
-				request := s.server.UDPRequestMap[clientAddr.String()]
-				UDPRequestChan <- request
+
+				request := s.UDPRequestMap[remoteAddr.String()]
+				//UDPRequestChan <- request
+				LaunchReplyChan := make(chan struct{})
+				go func(v *UDPRequest) {
+					//remoteListenAddr := <-rAddrChan
+					remoteRelayConn, err := net.ListenUDP("udp", v.remoteListenAddr)
+					if err != nil {
+						log.Println(err)
+						return
+					}
+					defer remoteRelayConn.Close()
+					//launch complete
+					remoteRelayConn.SetReadDeadline(time.Now().Add(time.Second * 3))
+					//assemble proxy header
+					b := make([]byte, MAXUDPDATA)
+					LaunchReplyChan <- struct{}{}
+					n, _, err := remoteRelayConn.ReadFromUDP(b)
+					if err != nil {
+						//log.Println(err)
+						return
+					}
+					dataBuf := AssembleHeader(b[:n], v.clientSrcAddr)
+					relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientSrcAddr)
+					log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", v.remoteListenAddr, n, v.clientSrcAddr)
+					delete(s.UDPRequestMap, v.remoteAddr.String())
+				}(request)
+				<-LaunchReplyChan
 
 				if int(frag) > request.position {
 					request.position = int(frag)
@@ -197,10 +232,9 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 						//reinitialize
 						request.reassemblyQueue = []byte{}
 						request.position = 0
-						relayConn.SetReadDeadline(time.Time{})
 					}
 					remoteConn.Write(dataBuf.Bytes())
-					log.Printf("[ID:%v][UDP]client:%v send %v bytes -> remote:%v\n", s.ID(), relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
+					log.Printf("[UDP]client:%v send %v bytes -> remote:%v\n", relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
 					continue
 				}
 
@@ -208,18 +242,11 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 				if int(frag) < request.position {
 					//send previous datagrams
 					remoteConn.Write(request.reassemblyQueue)
-					log.Printf("[ID:%v][UDP]client:%v send %v bytes -> remote:%v\n", s.ID(), relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
+					log.Printf("[UDP]client:%v send %v bytes -> remote:%v\n", relayConn.LocalAddr(), n, remoteConn.RemoteAddr())
 					//reinitialize
 					request.reassemblyQueue = []byte{}
 					request.position = 0
-					relayConn.SetReadDeadline(time.Time{})
 
-					//set timeout
-					err := relayConn.SetReadDeadline(time.Now().Add(expires))
-					if err != nil {
-						//closeChan <- err
-						continue
-					}
 					//save data
 					request.position = int(frag)
 					//save data
@@ -229,9 +256,9 @@ func (s *Socks5Conn) UDPTransport(relayConn *net.UDPConn, ctx context.Context) {
 		}
 	}()
 
-	go func() {
-		<-ctx.Done()
-		closeChan <- struct{}{}
-		closeChan <- struct{}{}
-	}()
+	//go func() {
+	//	<-ctx.Done()
+	//	closeChan <- struct{}{}
+	//	closeChan <- struct{}{}
+	//}()
 }

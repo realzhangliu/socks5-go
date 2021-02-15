@@ -1,14 +1,12 @@
 package socks5
 
 import (
-	"context"
-	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -23,7 +21,7 @@ https://cloud.tencent.com/developer/article/1682604
 
 const (
 	VERSION    = 5
-	MAXUDPDATA = 1472 //MTU-IPHEADER-UDPHEADER
+	MAXUDPDATA = 1024 //MTU-IPHEADER-UDPHEADER
 	atypIPV4   = byte(1)
 	atypIPV6   = byte(4)
 	atypFQDN   = byte(3)
@@ -31,161 +29,7 @@ const (
 
 var ErrMethod = byte(255)
 
-func (s *Socks5Conn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) {
-	addrATYP := byte(0)
-	var addrBody []byte
-	switch {
-	case addrIP == nil:
-		addrATYP = atypIPV4
-		addrBody = []byte{0, 0, 0, 0}
-	case addrIP.To4() != nil:
-		addrATYP = atypIPV4
-		addrBody = []byte(addrIP.To4())
-	case addrIP.To16() != nil:
-		addrATYP = atypIPV6
-		addrBody = []byte(addrIP.To16())
-	default:
-		log.Printf("[ID:%v]failed to format address.", s.ID())
-	}
-	msg := make([]byte, 0)
-	msg = append(msg, byte(VERSION))
-	msg = append(msg, byte(resp))
-	msg = append(msg, byte(0))
-	msg = append(msg, addrATYP)
-	msg = append(msg, addrBody...)
-	msg = append(msg, byte(addrPort>>8))
-	msg = append(msg, byte(addrPort&0xff))
-	_, err := conn.Write(msg)
-	if err != nil {
-		log.Printf("[ID:%v]%v", err)
-	}
-}
-func (s *Socks5Conn) VerifyPassword(conn net.Conn) bool {
-	verByte := make([]byte, 1)
-	n, err := conn.Read(verByte)
-	if err != nil || n == 0 {
-		panic(err)
-	}
-	if uint(verByte[0]) != 1 {
-		panic(verByte)
-	}
-	ulenByte := make([]byte, 1)
-	n, err = conn.Read(ulenByte)
-	if err != nil || n == 0 {
-		panic(err)
-	}
-	if uint(ulenByte[0]) < 1 {
-		panic(ulenByte)
-	}
-	unameByte := make([]byte, uint(ulenByte[0]))
-	n, err = conn.Read(unameByte)
-	if err != nil || n == 0 {
-		panic(err)
-	}
-	uname := string(unameByte)
-	plen := make([]byte, 1)
-	n, err = conn.Read(plen)
-	if err != nil || n == 0 {
-		panic(err)
-	}
-	if uint(plen[0]) < 1 {
-		panic(plen)
-	}
-	passwdByte := make([]byte, uint(plen[0]))
-	n, err = conn.Read(passwdByte)
-	if err != nil || n == 0 {
-		panic(err)
-	}
-	passwd := string(passwdByte)
-	log.Printf("user:%v\rpassed:%v\n", uname, passwd)
-
-	return true
-}
-func (s *Socks5Conn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
-	//client -> relay ->remote
-	go func() {
-		for {
-			b := make([]byte, 1024)
-			n, err := clientConn.Read(b)
-			if err != nil {
-				log.Printf("[ID:%v]%v", s.ID(), err)
-				closeChan <- err
-				clientConn.Close()
-				return
-			}
-			remoteConn.Write(b[:n])
-			log.Printf("[ID:%v][TCP]client:%v send %v bytes -> remote:%v\n", s.ID(), clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
-		}
-
-	}()
-	//remote -> relay -> client
-	go func() {
-		for {
-			b := make([]byte, 1024)
-			n, err := remoteConn.Read(b)
-			if err != nil {
-				if strings.Contains(err.Error(), "EOF") {
-					time.Sleep(time.Second)
-					continue
-				}
-				log.Printf("[ID:%v]%v", s.ID(), err)
-				closeChan <- err
-				remoteConn.Close()
-				return
-			}
-			clientConn.Write(b[:n])
-			log.Printf("[ID:%v][TCP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
-		}
-	}()
-}
-func (s *Socks5Conn) GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
-	//address types
-	switch atyp {
-	case int(atypIPV4):
-		log.Printf("[ID:%v]ADDRESS TYPE: IP V4 address <- %v\n", s.ID(), conn.RemoteAddr())
-		dstAddrBytes := make([]byte, 4)
-		n, err := conn.Read(dstAddrBytes)
-		if err != nil || n == 0 {
-			panic(err)
-		}
-		d := net.IP(dstAddrBytes)
-		return &d
-	case int(atypFQDN):
-		log.Printf("[ID:%v]ADDRESS TYPE: DOMAINNAME <- %v\n", s.ID(), conn.RemoteAddr())
-		hostLenByte := make([]byte, 1)
-		n, err := conn.Read(hostLenByte)
-		if err != nil || n == 0 {
-			panic(err)
-		}
-		hostBytes := make([]byte, int(hostLenByte[0]))
-		n, err = conn.Read(hostBytes)
-		if err != nil || n == 0 {
-			panic(err)
-		}
-		domain := string(hostBytes)
-		addrs, err := net.LookupHost(domain)
-		if err != nil {
-			panic(err)
-		}
-		ipAddr, err := net.ResolveIPAddr("ip", addrs[0])
-		if err != nil {
-			panic(err)
-		}
-		return &ipAddr.IP
-	case int(atypIPV6):
-		log.Printf("[ID:%v]ADDRESS TYPE: IP V6 address <- %v\n", s.ID(), conn.RemoteAddr())
-		dstAddrBytes := make([]byte, 16)
-		n, err := conn.Read(dstAddrBytes)
-		if err != nil || n == 0 {
-			panic(err)
-		}
-		d := net.IP(dstAddrBytes)
-		return &d
-	default:
-		panic(atyp)
-	}
-}
-func (s *Socks5Conn) ServConn(conn net.Conn) {
+func (s *TcpConn) ServConn(conn net.Conn) {
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
 	/*+----+----------+----------+
@@ -283,10 +127,14 @@ func (s *Socks5Conn) ServConn(conn net.Conn) {
 		return
 	}
 	dstIP := s.GetIPWithATYP(conn, atyp)
+	if dstIP == nil {
+		return
+	}
 	dstPortBytes := make([]byte, 2)
 	n, err = conn.Read(dstPortBytes)
-	if err != nil || n == 0 {
-		panic(err)
+	if err != nil {
+		log.Printf("[ID:%v]%v", s.ID(), err)
+		return
 	}
 	//dstPort := bytes2int(dstPortBytes)
 	dstPort := int(dstPortBytes[0])<<8 + int(dstPortBytes[1])
@@ -301,27 +149,44 @@ func (s *Socks5Conn) ServConn(conn net.Conn) {
 	//command
 	switch cmd {
 	case 1:
-		log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
-		targetConn, err := net.DialTCP("tcp", nil, &net.TCPAddr{
+		targetAddr := &net.TCPAddr{
 			IP:   *dstIP,
 			Port: dstPort,
 			Zone: "",
-		})
-		if err != nil {
-			b = append(b, byte(1))
-			conn.Write(b)
+		}
+		s.server.lock.Lock()
+		if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
+			s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
+				remoteAddr: targetAddr,
+				clientAddr: conn.RemoteAddr().(*net.TCPAddr),
+			}
+		} else {
+			log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
+			s.server.lock.Unlock()
 			return
 		}
-		s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
+		s.server.lock.Unlock()
+
+		log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
+		targetConn, err := net.DialTCP("tcp", nil, targetAddr)
+		if err != nil {
+			//log.Printf("[ID:%v]%v", s.ID(), err)
+			return
+		}
 		closeChan := make(chan error, 2)
 		s.TCPTransport(conn, targetConn, closeChan)
+		s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
 		for i := 0; i < 2; i++ {
-			e := <-closeChan
-			if e != nil {
-				return
+			v := <-closeChan
+			if v == nil {
+				continue
 			}
+			s.server.lock.Lock()
+			delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
+			s.server.lock.Unlock()
+			conn.Close()
+			targetConn.Close()
 		}
-		return
 	case 2:
 		log.Printf("[ID:%v]COMMAND: BIND <- %v\n", s.ID(), conn.RemoteAddr())
 		//BIND之前需要有CONNECT连接验证
@@ -347,45 +212,18 @@ func (s *Socks5Conn) ServConn(conn net.Conn) {
 				return
 			}
 		}
-		return
 	case 3:
 		log.Printf("[ID:%v]COMMAND: UDP ASSOCIATE <- %v\n", s.ID(), conn.RemoteAddr())
+		log.Printf("[ID:%v]CLIENT EXPECT IP:%v  PORT:%v\n", s.ID(), dstIP.String(), dstPort)
 		//dstPort is client expected port send UDP data to.
-		if s.server.Socks5UDPserver != nil {
-			s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, s.server.udpServer.LocalAddr().(*net.UDPAddr).Port, 0)
-			log.Printf("[ID:%v][UDP] REPLY ALREADY BIND PORT: %v \n", s.ID(), s.server.udpServer.LocalAddr().(*net.UDPAddr).Port)
-		} else {
-			expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", dstIP.String(), dstPort))
-			if err != nil {
-				return
-			}
-			//it's for receiving data from client
-			relayConn, err := net.ListenUDP("udp", expectedAddr)
-			if err != nil {
-				return
-			}
-			s.server.Socks5UDPserver = &Socks5UDPserver{
-				udpServer:     relayConn,
-				UDPRequestMap: make(map[string]*UDPRequest),
-			}
-
-			//indicate server UDP addr and port
-			s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, relayConn.LocalAddr().(*net.UDPAddr).Port, 0)
-			log.Printf("[ID:%v][UDP] REPLY BIND PORT: %v \n", s.ID(), relayConn.LocalAddr().(*net.UDPAddr).Port)
-
-			//some authenticity
-			ctx, cancelFunc := context.WithCancel(context.Background())
-			s.UDPTransport(relayConn, ctx)
-			/*A UDP association terminates when the TCP connection that the UDP
-			ASSOCIATE request arrived on terminates.*/
-			for {
-				conn.SetReadDeadline(time.Now())
-				if _, err := conn.Read([]byte{}); err == io.EOF {
-					cancelFunc()
-					break
-				} else {
-					conn.SetReadDeadline(time.Time{})
-				}
+		s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, s.server.udpConn.LocalAddr().(*net.UDPAddr).Port, 0)
+		log.Printf("[ID:%v][UDP] REPLY ALREADY BIND PORT: %v \n", s.ID(), s.server.udpConn.LocalAddr().(*net.UDPAddr).Port)
+		for {
+			conn.SetReadDeadline(time.Now())
+			if _, err := conn.Read([]byte{}); err == io.EOF {
+				break
+			} else {
+				conn.SetReadDeadline(time.Time{})
 				time.Sleep(time.Second * 10)
 			}
 		}
@@ -394,23 +232,31 @@ func (s *Socks5Conn) ServConn(conn net.Conn) {
 
 //多次相同请求的处理
 func Launch() {
-	log.SetFlags(log.LstdFlags)
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
+	socks5Srv := NewSocks5Server()
 	listener, err := net.Listen("tcp", ":1090")
 	if err != nil {
 		os.Exit(1)
 	}
-	ser := &Server{}
+	go func() {
+		for {
+			log.Printf("TOTAL TCP CONN:%v  UDP CONN:%v\n", len(socks5Srv.TCPRequestMap), len(socks5Srv.UDPRequestMap))
+			time.Sleep(time.Second * 1)
+		}
+	}()
+	go func() {
+		log.Println(http.ListenAndServe("localhost:8866", nil))
+	}()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			os.Exit(1)
 		}
-		s := &Socks5Conn{
-			server:  ser,
+		s := &TcpConn{
+			server:  socks5Srv,
 			tcpConn: conn.(*net.TCPConn),
-			lock:    sync.RWMutex{},
 		}
-		ser.conn = append(ser.conn, s)
+		socks5Srv.conn = append(socks5Srv.conn, s)
 		go s.ServConn(conn)
 	}
 }
