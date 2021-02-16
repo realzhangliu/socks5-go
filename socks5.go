@@ -30,40 +30,6 @@ const (
 
 var ErrMethod = byte(255)
 
-func (s *TcpConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
-
-	s.server.lock.Lock()
-	if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
-		s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
-			remoteAddr: targetAddr,
-			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
-		}
-	} else {
-		log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
-		s.server.lock.Unlock()
-		return
-	}
-	s.server.lock.Unlock()
-
-	log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
-	targetConn, err := net.DialTCP("tcp", nil, targetAddr)
-	if err != nil {
-		//log.Printf("[ID:%v]%v", s.ID(), err)
-		return
-	}
-	closeChan := make(chan error, 2)
-	s.TCPTransport(conn, targetConn, closeChan)
-	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
-	for i := 0; i < 2; i++ {
-		<-closeChan
-	}
-	s.server.lock.Lock()
-	delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
-	s.server.lock.Unlock()
-	conn.Close()
-	targetConn.Close()
-}
-
 func (s *TcpConn) ServConn(conn net.Conn) {
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)

@@ -18,6 +18,12 @@ type Server struct {
 	hostResolver  *net.Resolver
 }
 
+func GenerateTCPRequestKey(clientAddr, targetAddr *net.TCPAddr) string {
+	//key=client ip + remote addr
+	s := fmt.Sprintf("%v|%v", clientAddr.IP.String(), targetAddr.String())
+	return s
+}
+
 var DNSAddrs = []string{
 	"114.114.114.114:53",
 	"8.8.8.8:53",
@@ -69,9 +75,21 @@ type TcpConn struct {
 	server  *Server
 	id      string
 	tcpConn *net.TCPConn
+	Dialer  *net.Dialer
 }
 
-func (s TcpConn) ID() string {
+func (s *TcpConn) DialTCP(addr *net.TCPAddr) (net.Conn, error) {
+	if s.Dialer == nil {
+		s.Dialer = DEFAULT_TCP_DIALER
+	}
+	return s.Dialer.Dial("tcp", addr.String())
+}
+
+var DEFAULT_TCP_DIALER = &net.Dialer{
+	Timeout: time.Second * 3,
+}
+
+func (s *TcpConn) ID() string {
 	if s.id == "" {
 		m := md5.New()
 		m.Write([]byte(s.tcpConn.RemoteAddr().String()))
@@ -98,4 +116,6 @@ type UDPRequest struct {
 type TCPRequest struct {
 	remoteAddr *net.TCPAddr
 	clientAddr *net.TCPAddr
+	clientConn net.Conn
+	remoteConn net.Conn
 }

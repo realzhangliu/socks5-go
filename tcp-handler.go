@@ -10,6 +10,41 @@ import (
 	"time"
 )
 
+//HandleCONNECT
+func (s *TcpConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
+	log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
+	s.server.lock.Lock()
+	if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
+		s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
+			remoteAddr: targetAddr,
+			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
+			clientConn: conn,
+		}
+	} else {
+		log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
+		s.sendReply(conn, targetAddr.IP, targetAddr.Port, 5)
+		s.server.lock.Unlock()
+		return
+	}
+	s.server.lock.Unlock()
+
+	targetConn, err := s.DialTCP(targetAddr)
+	if err != nil {
+		s.sendReply(conn, targetAddr.IP, targetAddr.Port, 3)
+		return
+	}
+	closeChan := make(chan error, 2)
+	s.TCPTransport(conn, targetConn, closeChan)
+	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
+	for i := 0; i < 2; i++ {
+		<-closeChan
+	}
+	s.server.lock.Lock()
+	delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
+	s.server.lock.Unlock()
+	conn.Close()
+	targetConn.Close()
+}
 func (s *TcpConn) TCPTransportb(clientConn, remoteConn net.Conn, closeChan chan error) {
 	//client -> relay ->remote
 	go func() {
@@ -70,14 +105,18 @@ func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 		limit := TCPRETRY
 		remoteConn.SetReadDeadline(time.Now().Add(time.Second * 3))
 		for {
-			_, err := io.Copy(clientConn, remoteConn)
-			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "timeout")) {
-				closeChan <- err
-				return
-			} else if limit <= 0 {
-				closeChan <- err
-				return
+			n, err := io.Copy(clientConn, remoteConn)
+			if err == nil {
+				if n == 0 {
+					time.Sleep(time.Second * 3)
+					continue
+				}
+				log.Printf("[ID:%v][TCP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
 			} else {
+				if err == io.EOF || strings.Contains(err.Error(), "timeout") || limit <= 0 {
+					closeChan <- err
+					return
+				}
 				time.Sleep(time.Second * 5)
 				limit--
 			}
@@ -87,14 +126,18 @@ func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 		limit := TCPRETRY
 		clientConn.SetReadDeadline(time.Now().Add(time.Second * 3))
 		for {
-			_, err := io.Copy(remoteConn, clientConn)
-			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "timeout")) {
-				closeChan <- err
-				return
-			} else if limit <= 0 {
-				closeChan <- err
-				return
+			n, err := io.Copy(remoteConn, clientConn)
+			if err == nil {
+				if n == 0 {
+					time.Sleep(time.Second * 3)
+					continue
+				}
+				log.Printf("[ID:%v][TCP]client:%v send %v bytes -> remote:%v\n", s.ID(), clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
 			} else {
+				if err == io.EOF || strings.Contains(err.Error(), "timeout") || limit <= 0 {
+					closeChan <- err
+					return
+				}
 				time.Sleep(time.Second * 5)
 				limit--
 			}
