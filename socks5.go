@@ -25,9 +25,44 @@ const (
 	atypIPV4   = byte(1)
 	atypIPV6   = byte(4)
 	atypFQDN   = byte(3)
+	TCPRETRY   = 3
 )
 
 var ErrMethod = byte(255)
+
+func (s *TcpConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
+
+	s.server.lock.Lock()
+	if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
+		s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
+			remoteAddr: targetAddr,
+			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
+		}
+	} else {
+		log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
+		s.server.lock.Unlock()
+		return
+	}
+	s.server.lock.Unlock()
+
+	log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
+	targetConn, err := net.DialTCP("tcp", nil, targetAddr)
+	if err != nil {
+		//log.Printf("[ID:%v]%v", s.ID(), err)
+		return
+	}
+	closeChan := make(chan error, 2)
+	s.TCPTransport(conn, targetConn, closeChan)
+	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
+	for i := 0; i < 2; i++ {
+		<-closeChan
+	}
+	s.server.lock.Lock()
+	delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
+	s.server.lock.Unlock()
+	conn.Close()
+	targetConn.Close()
+}
 
 func (s *TcpConn) ServConn(conn net.Conn) {
 	verByte := []byte{0}
@@ -126,18 +161,11 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 	if ver != VERSION {
 		return
 	}
-	dstIP := s.GetIPWithATYP(conn, atyp)
-	if dstIP == nil {
-		return
-	}
-	dstPortBytes := make([]byte, 2)
-	n, err = conn.Read(dstPortBytes)
+	targetAddr, err := s.getDstTCPAddr(conn, atyp)
 	if err != nil {
 		log.Printf("[ID:%v]%v", s.ID(), err)
 		return
 	}
-	//dstPort := bytes2int(dstPortBytes)
-	dstPort := int(dstPortBytes[0])<<8 + int(dstPortBytes[1])
 	//reply
 	/*
 		+----+-----+-------+------+----------+----------+
@@ -149,44 +177,7 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 	//command
 	switch cmd {
 	case 1:
-		targetAddr := &net.TCPAddr{
-			IP:   *dstIP,
-			Port: dstPort,
-			Zone: "",
-		}
-		s.server.lock.Lock()
-		if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
-			s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
-				remoteAddr: targetAddr,
-				clientAddr: conn.RemoteAddr().(*net.TCPAddr),
-			}
-		} else {
-			log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
-			s.server.lock.Unlock()
-			return
-		}
-		s.server.lock.Unlock()
-
-		log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
-		targetConn, err := net.DialTCP("tcp", nil, targetAddr)
-		if err != nil {
-			//log.Printf("[ID:%v]%v", s.ID(), err)
-			return
-		}
-		closeChan := make(chan error, 2)
-		s.TCPTransport(conn, targetConn, closeChan)
-		s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
-		for i := 0; i < 2; i++ {
-			v := <-closeChan
-			if v == nil {
-				continue
-			}
-			s.server.lock.Lock()
-			delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
-			s.server.lock.Unlock()
-			conn.Close()
-			targetConn.Close()
-		}
+		s.HandleCONNECT(conn, targetAddr)
 	case 2:
 		log.Printf("[ID:%v]COMMAND: BIND <- %v\n", s.ID(), conn.RemoteAddr())
 		//BIND之前需要有CONNECT连接验证
@@ -207,14 +198,13 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 		closeChan := make(chan error, 2)
 		s.TCPTransport(conn, targetConn, closeChan)
 		for i := 0; i < 2; i++ {
-			e := <-closeChan
-			if e != nil {
-				return
-			}
+			<-closeChan
 		}
+		conn.Close()
+		targetConn.Close()
 	case 3:
 		log.Printf("[ID:%v]COMMAND: UDP ASSOCIATE <- %v\n", s.ID(), conn.RemoteAddr())
-		log.Printf("[ID:%v]CLIENT EXPECT IP:%v  PORT:%v\n", s.ID(), dstIP.String(), dstPort)
+		log.Printf("[ID:%v]CLIENT EXPECT IP:%v  PORT:%v\n", s.ID(), targetAddr.IP.String(), targetAddr.Port)
 		//dstPort is client expected port send UDP data to.
 		s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, s.server.udpConn.LocalAddr().(*net.UDPAddr).Port, 0)
 		log.Printf("[ID:%v][UDP] REPLY ALREADY BIND PORT: %v \n", s.ID(), s.server.udpConn.LocalAddr().(*net.UDPAddr).Port)
