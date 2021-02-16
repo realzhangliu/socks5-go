@@ -170,7 +170,7 @@ func (s *TcpConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int
 	msg = append(msg, byte(addrPort&0xff))
 	_, err := conn.Write(msg)
 	if err != nil {
-		log.Printf("[ID:%v]%v", err)
+		log.Printf("[ID:%v]%v", s.ID(), err)
 	}
 }
 func (s *TcpConn) VerifyPassword(conn net.Conn) bool {
