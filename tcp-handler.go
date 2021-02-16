@@ -2,9 +2,11 @@ package socks5
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -65,10 +67,11 @@ func (s *TcpConn) TCPTransportb(clientConn, remoteConn net.Conn, closeChan chan 
 }
 func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
 	go func() {
-		limit := 3
+		limit := TCPRETRY
+		remoteConn.SetReadDeadline(time.Now().Add(time.Second * 3))
 		for {
 			_, err := io.Copy(clientConn, remoteConn)
-			if err == io.EOF {
+			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "timeout")) {
 				closeChan <- err
 				return
 			} else if limit <= 0 {
@@ -81,10 +84,11 @@ func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 		}
 	}()
 	go func() {
-		limit := 3
+		limit := TCPRETRY
+		clientConn.SetReadDeadline(time.Now().Add(time.Second * 3))
 		for {
 			_, err := io.Copy(remoteConn, clientConn)
-			if err == io.EOF {
+			if err != nil && (err == io.EOF || strings.Contains(err.Error(), "timeout")) {
 				closeChan <- err
 				return
 			} else if limit <= 0 {
@@ -167,50 +171,57 @@ func (s *TcpConn) VerifyPassword(conn net.Conn) bool {
 
 	return true
 }
-func (s *TcpConn) GetIPWithATYP(conn net.Conn, atyp int) *net.IP {
+func (s *TcpConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAddr, err error) {
 	//address types
+	var IP net.IP
 	switch atyp {
 	case int(atypIPV4):
 		log.Printf("[ID:%v]ADDRESS TYPE: IP V4 address <- %v\n", s.ID(), conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 4)
 		_, err := conn.Read(dstAddrBytes)
 		if err != nil {
-			log.Printf("[ID:%v]%v", s.ID(), err)
-			return nil
+			return nil, err
 		}
-		d := net.IP(dstAddrBytes)
-		return &d
+		IP = net.IP(dstAddrBytes)
 	case int(atypFQDN):
 		log.Printf("[ID:%v]ADDRESS TYPE: DOMAINNAME <- %v\n", s.ID(), conn.RemoteAddr())
 		hostLenByte := make([]byte, 1)
 		_, err := conn.Read(hostLenByte)
 		if err != nil {
-			log.Printf("[ID:%v]%v", s.ID(), err)
-			return nil
+			return nil, err
 		}
 		hostBytes := make([]byte, int(hostLenByte[0]))
 		_, err = conn.Read(hostBytes)
 		if err != nil {
-			log.Printf("[ID:%v]%v", s.ID(), err)
-			return nil
+			return nil, err
 		}
 		domain := string(hostBytes)
 		IPAddrs, err := s.server.hostResolver.LookupIPAddr(context.Background(), domain)
 		if err != nil {
-			log.Printf("[ID:%v]%v", s.ID(), err)
-			return nil
+			return nil, err
 		}
-		return &IPAddrs[0].IP
+		IP = IPAddrs[0].IP
 	case int(atypIPV6):
 		log.Printf("[ID:%v]ADDRESS TYPE: IP V6 address <- %v\n", s.ID(), conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 16)
-		n, err := conn.Read(dstAddrBytes)
-		if err != nil || n == 0 {
-			panic(err)
+		_, err := conn.Read(dstAddrBytes)
+		if err != nil {
+			return nil, err
 		}
-		d := net.IP(dstAddrBytes)
-		return &d
+		IP = net.IP(dstAddrBytes)
 	default:
-		panic(atyp)
+		return nil, errors.New("Unknow address type.")
 	}
+	dstPortBytes := make([]byte, 2)
+	_, err = conn.Read(dstPortBytes)
+	if err != nil {
+		return nil, err
+	}
+	dstPort := int(dstPortBytes[0])<<8 + int(dstPortBytes[1])
+	targetAddr = &net.TCPAddr{
+		IP:   IP,
+		Port: dstPort,
+		Zone: "",
+	}
+	return
 }
