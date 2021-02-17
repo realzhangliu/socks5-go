@@ -10,97 +10,26 @@ import (
 	"time"
 )
 
-//HandleCONNECT
-func (s *TcpConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
+func (s *TCPConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
 	log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
-	s.server.lock.Lock()
-	if s.server.TCPRequestMap[conn.RemoteAddr().String()] == nil {
-		s.server.TCPRequestMap[conn.RemoteAddr().String()] = &TCPRequest{
-			remoteAddr: targetAddr,
-			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
-			clientConn: conn,
-		}
-	} else {
-		log.Printf("[ID:%v]DUPLICATED REQUEST REMOTE ADDR:%v", s.ID(), targetAddr)
-		s.sendReply(conn, targetAddr.IP, targetAddr.Port, 5)
-		s.server.lock.Unlock()
-		return
-	}
-	s.server.lock.Unlock()
-
 	targetConn, err := s.DialTCP(targetAddr)
 	if err != nil {
 		s.sendReply(conn, targetAddr.IP, targetAddr.Port, 3)
+		conn.Close()
 		return
 	}
+	s.NewTCPRequest(conn, targetConn)
 	closeChan := make(chan error, 2)
 	s.TCPTransport(conn, targetConn, closeChan)
 	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
 	for i := 0; i < 2; i++ {
 		<-closeChan
 	}
-	s.server.lock.Lock()
-	delete(s.server.TCPRequestMap, conn.RemoteAddr().String())
-	s.server.lock.Unlock()
-	conn.Close()
-	targetConn.Close()
+	s.DelTCPRequest(targetAddr.String())
 }
-func (s *TcpConn) TCPTransportb(clientConn, remoteConn net.Conn, closeChan chan error) {
-	//client -> relay ->remote
-	go func() {
-		limit := 3
-		clientConn.SetReadDeadline(time.Now().Add(time.Second * 3))
-		for {
-			b := make([]byte, 1024)
-			n, err := clientConn.Read(b)
-			if err != nil {
-				if err == io.EOF {
-					closeChan <- err
-					clientConn.Close()
-					return
-				}
-				if limit <= 0 {
-					closeChan <- err
-					clientConn.Close()
-					return
-				}
-				time.Sleep(time.Second * 5)
-				limit--
-				continue
-			}
-			remoteConn.Write(b[:n])
-			log.Printf("[ID:%v][TCP]client:%v send %v bytes -> remote:%v\n", s.ID(), clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
-		}
-	}()
 
-	//remote -> relay -> client
-	go func() {
-		limit := 3
-		remoteConn.SetReadDeadline(time.Now().Add(time.Second * 3))
-		for {
-			b := make([]byte, 1024)
-			n, err := remoteConn.Read(b)
-			if err != nil {
-				if err == io.EOF {
-					closeChan <- err
-					remoteConn.Close()
-					return
-				}
-				if limit <= 0 {
-					closeChan <- err
-					remoteConn.Close()
-					return
-				}
-				time.Sleep(time.Second * 5)
-				limit--
-				continue
-			}
-			clientConn.Write(b[:n])
-			log.Printf("[ID:%v][TCP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
-		}
-	}()
-}
-func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
+//Concurrently TCP traffic transport with 3 reading timeout
+func (s *TCPConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
 	go func() {
 		limit := TCPRETRY
 		remoteConn.SetReadDeadline(time.Now().Add(time.Second * 3))
@@ -144,7 +73,15 @@ func (s *TcpConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 		}
 	}()
 }
-func (s *TcpConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) {
+
+/*
+	+----+-----+-------+------+----------+----------+
+	 |VER | REP | RSV | ATYP | BND.ADDR | BND.PORT |
+	 +----+-----+-------+------+----------+----------+
+	 | 1 | 1 | X’00’ | 1 | Variable | 2 |
+	 +----+-----+-------+------+----------+----------+
+*/
+func (s *TCPConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int) {
 	addrATYP := byte(0)
 	var addrBody []byte
 	switch {
@@ -173,7 +110,7 @@ func (s *TcpConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int
 		log.Printf("[ID:%v]%v", s.ID(), err)
 	}
 }
-func (s *TcpConn) VerifyPassword(conn net.Conn) bool {
+func (s *TCPConn) getUsernamPassword(conn net.Conn) bool {
 	verByte := make([]byte, 1)
 	n, err := conn.Read(verByte)
 	if err != nil || n == 0 {
@@ -214,7 +151,7 @@ func (s *TcpConn) VerifyPassword(conn net.Conn) bool {
 
 	return true
 }
-func (s *TcpConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAddr, err error) {
+func (s *TCPConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAddr, err error) {
 	//address types
 	var IP net.IP
 	switch atyp {

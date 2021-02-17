@@ -5,6 +5,8 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -12,7 +14,7 @@ import (
 
 type Server struct {
 	*Socks5UDPserver
-	conn          []*TcpConn
+	conn          []*TCPConn
 	lock          sync.RWMutex
 	TCPRequestMap map[string]*TCPRequest
 	hostResolver  *net.Resolver
@@ -51,34 +53,81 @@ func NewSocks5Server() *Server {
 			return nil, nil
 		},
 	}
-	s.UDPServer()
+	//TCP SERVER
+	//UDP SERVER
+	go s.UDPServer()
 	return &s
 }
 func (s *Server) UDPServer() {
 	expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", "0.0.0.0", 0))
 	if err != nil {
-		return
+		panic(err)
 	}
 	//it's for receiving data from client
 	relayConn, err := net.ListenUDP("udp", expectedAddr)
 	if err != nil {
-		return
+		panic(err)
 	}
 	s.Socks5UDPserver = &Socks5UDPserver{
 		udpConn:       relayConn,
 		UDPRequestMap: make(map[string]*UDPRequest),
 	}
-	go s.UDPTransport(relayConn)
+	for {
+		b := make([]byte, MAXUDPDATA)
+		n, clientAddr, err := relayConn.ReadFromUDP(b)
+		if err != nil {
+			if err == io.EOF {
+				log.Println(err)
+				return
+			} else {
+				time.Sleep(time.Second * 1)
+				continue
+			}
+		}
+		go s.UDPTransport(relayConn, clientAddr, b[:n])
+	}
 }
 
-type TcpConn struct {
+type TCPConn struct {
 	server  *Server
 	id      string
 	tcpConn *net.TCPConn
 	Dialer  *net.Dialer
 }
 
-func (s *TcpConn) DialTCP(addr *net.TCPAddr) (net.Conn, error) {
+//NewTCPRequest Add new connect request
+func (s *TCPConn) NewTCPRequest(conn, targetConn net.Conn) *TCPRequest {
+	s.server.lock.Lock()
+	defer s.server.lock.Unlock()
+	targetAddrStr := targetConn.RemoteAddr().(*net.TCPAddr).String()
+	if s.server.TCPRequestMap[targetAddrStr] == nil {
+		s.server.TCPRequestMap[targetAddrStr] = &TCPRequest{
+			TargetAddr: targetConn.RemoteAddr().(*net.TCPAddr),
+			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
+			clientConn: conn,
+			TargetConn: targetConn,
+		}
+	}
+	return s.server.TCPRequestMap[targetAddrStr]
+}
+
+//DelTCPRequest del request & close connection
+func (s *TCPConn) DelTCPRequest(targetAddr string) {
+	s.server.lock.Lock()
+	defer s.server.lock.Unlock()
+	request := s.server.TCPRequestMap[targetAddr]
+	if request != nil {
+		if request.TargetConn != nil {
+			request.TargetConn.Close()
+		}
+		if request.clientConn != nil {
+			request.clientConn.Close()
+		}
+	}
+	delete(s.server.TCPRequestMap, targetAddr)
+
+}
+func (s *TCPConn) DialTCP(addr *net.TCPAddr) (net.Conn, error) {
 	if s.Dialer == nil {
 		s.Dialer = DEFAULT_TCP_DIALER
 	}
@@ -89,7 +138,7 @@ var DEFAULT_TCP_DIALER = &net.Dialer{
 	Timeout: time.Second * 3,
 }
 
-func (s *TcpConn) ID() string {
+func (s *TCPConn) ID() string {
 	if s.id == "" {
 		m := md5.New()
 		m.Write([]byte(s.tcpConn.RemoteAddr().String()))
@@ -106,16 +155,16 @@ type Socks5UDPserver struct {
 
 //UDPRequest save each of udp conn by client.support for fragments
 type UDPRequest struct {
-	clientSrcAddr    *net.UDPAddr
-	remoteListenAddr *net.UDPAddr
-	remoteAddr       *net.UDPAddr
-	reassemblyQueue  []byte
-	position         int
-	requestConn      net.Conn
+	clientAddr      *net.UDPAddr
+	remoteConn      *net.UDPConn
+	remoteAddr      *net.UDPAddr
+	reassemblyQueue []byte
+	position        int
+	requestConn     net.Conn
 }
 type TCPRequest struct {
-	remoteAddr *net.TCPAddr
+	TargetAddr *net.TCPAddr
 	clientAddr *net.TCPAddr
 	clientConn net.Conn
-	remoteConn net.Conn
+	TargetConn net.Conn
 }

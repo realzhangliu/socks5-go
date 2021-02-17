@@ -30,15 +30,17 @@ const (
 
 var ErrMethod = byte(255)
 
-func (s *TcpConn) ServConn(conn net.Conn) {
+/*
++----+----------+----------+
+|VER | NMETHODS | METHODS |
++----+----------+----------+
+| 1 | 1 | 1 to 255 |
++----+----------+----------+
+*/
+func (s *TCPConn) ServConn(conn net.Conn) {
 	verByte := []byte{0}
 	nmethods := make([]byte, 1)
-	/*+----+----------+----------+
-	|VER | NMETHODS | METHODS |
-	+----+----------+----------+
-	| 1 | 1 | 1 to 255 |
-	+----+----------+----------+
-	*/
+
 	n, err := conn.Read(verByte)
 	if err != nil {
 		return
@@ -91,8 +93,7 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 			conn.Write(b)
 			closeBytes := make([]byte, 0)
 			closeBytes = append(closeBytes, byte(1))
-			//verify
-			if !s.VerifyPassword(conn) {
+			if !s.getUsernamPassword(conn) {
 				closeBytes = append(closeBytes, byte(1))
 				conn.Write(closeBytes)
 				os.Exit(1)
@@ -132,19 +133,13 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 		log.Printf("[ID:%v]%v", s.ID(), err)
 		return
 	}
-	//reply
-	/*
-		+----+-----+-------+------+----------+----------+
-		 |VER | REP | RSV | ATYP | BND.ADDR | BND.PORT |
-		 +----+-----+-------+------+----------+----------+
-		 | 1 | 1 | X’00’ | 1 | Variable | 2 |
-		 +----+-----+-------+------+----------+----------+
-	*/
 	//command
 	switch cmd {
 	case 1:
+		log.Printf("TOTAL TCP CONN:%v  UDP CONN:%v\n", len(s.server.TCPRequestMap), len(s.server.UDPRequestMap))
 		s.HandleCONNECT(conn, targetAddr)
 	case 2:
+		log.Printf("TOTAL TCP CONN:%v  UDP CONN:%v\n", len(s.server.TCPRequestMap), len(s.server.UDPRequestMap))
 		log.Printf("[ID:%v]COMMAND: BIND <- %v\n", s.ID(), conn.RemoteAddr())
 		//BIND之前需要有CONNECT连接验证
 		//建立监听 给目标服务用 例如 FTP 的数据传输
@@ -169,17 +164,18 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 		conn.Close()
 		targetConn.Close()
 	case 3:
+		log.Printf("TOTAL TCP CONN:%v  UDP CONN:%v\n", len(s.server.TCPRequestMap), len(s.server.UDPRequestMap))
+
 		log.Printf("[ID:%v]COMMAND: UDP ASSOCIATE <- %v\n", s.ID(), conn.RemoteAddr())
 		log.Printf("[ID:%v]CLIENT EXPECT IP:%v  PORT:%v\n", s.ID(), targetAddr.IP.String(), targetAddr.Port)
-		//dstPort is client expected port send UDP data to.
 		s.sendReply(conn, conn.LocalAddr().(*net.TCPAddr).IP, s.server.udpConn.LocalAddr().(*net.UDPAddr).Port, 0)
-		log.Printf("[ID:%v][UDP] REPLY ALREADY BIND PORT: %v \n", s.ID(), s.server.udpConn.LocalAddr().(*net.UDPAddr).Port)
+		log.Printf("[ID:%v][UDP] REPLY BIND PORT: %v \n", s.ID(), s.server.udpConn.LocalAddr().(*net.UDPAddr).Port)
 		for {
-			conn.SetReadDeadline(time.Now())
+			conn.SetReadDeadline(time.Time{})
 			if _, err := conn.Read([]byte{}); err == io.EOF {
-				break
+				conn.Close()
+				return
 			} else {
-				conn.SetReadDeadline(time.Time{})
 				time.Sleep(time.Second * 10)
 			}
 		}
@@ -188,17 +184,12 @@ func (s *TcpConn) ServConn(conn net.Conn) {
 
 func Launch() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	socks5Srv := NewSocks5Server()
+	socks5Server := NewSocks5Server()
 	listener, err := net.Listen("tcp", ":1090")
 	if err != nil {
-		os.Exit(1)
+		panic(err)
 	}
-	go func() {
-		for {
-			log.Printf("TOTAL TCP CONN:%v  UDP CONN:%v\n", len(socks5Srv.TCPRequestMap), len(socks5Srv.UDPRequestMap))
-			time.Sleep(time.Second * 1)
-		}
-	}()
+	log.Printf("listening on :%v", listener.Addr())
 	go func() {
 		log.Println(http.ListenAndServe("localhost:8866", nil))
 	}()
@@ -207,11 +198,11 @@ func Launch() {
 		if err != nil {
 			os.Exit(1)
 		}
-		s := &TcpConn{
-			server:  socks5Srv,
+		s := &TCPConn{
+			server:  socks5Server,
 			tcpConn: conn.(*net.TCPConn),
 		}
-		socks5Srv.conn = append(socks5Srv.conn, s)
+		socks5Server.conn = append(socks5Server.conn, s)
 		go s.ServConn(conn)
 	}
 }
