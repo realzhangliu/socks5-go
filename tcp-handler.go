@@ -2,7 +2,6 @@ package socks5
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log"
 	"net"
@@ -10,22 +9,43 @@ import (
 	"time"
 )
 
-func (s *TCPConn) HandleCONNECT(conn net.Conn, targetAddr *net.TCPAddr) {
-	log.Printf("[ID:%v]COMMAND: CONNECT <- %v\n", s.ID(), conn.RemoteAddr())
-	targetConn, err := s.DialTCP(targetAddr)
+func (s *TCPConn) HandleBIND(conn net.Conn, req *TCPRequest) {
+	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		s.sendReply(conn, targetAddr.IP, targetAddr.Port, 3)
-		conn.Close()
 		return
 	}
-	s.NewTCPRequest(conn, targetConn)
+	//first reply
+	s.sendReply(conn, listener.Addr().(*net.TCPAddr).IP, listener.Addr().(*net.TCPAddr).Port, 0)
+	//server -> client
+	targetConn, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	//sec reply
+	s.sendReply(conn, targetConn.RemoteAddr().(*net.TCPAddr).IP, targetConn.RemoteAddr().(*net.TCPAddr).Port, 0)
+	s.NewTCPRequest(conn, req)
+	closeChan := make(chan error, 2)
+	s.TCPTransport(conn, targetConn, closeChan)
+	for i := 0; i < 2; i++ {
+		<-closeChan
+	}
+	s.DelTCPRequest(req.TargetAddr.String())
+}
+func (s *TCPConn) HandleCONNECT(conn net.Conn, req *TCPRequest) {
+	targetConn, err := s.DialTCP(req.TargetAddr)
+	if err != nil {
+		s.sendReply(conn, req.TargetAddr.IP, req.TargetAddr.Port, 3)
+		return
+	}
+	req.TargetConn = targetConn
+	s.NewTCPRequest(conn, req)
 	closeChan := make(chan error, 2)
 	s.TCPTransport(conn, targetConn, closeChan)
 	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
 	for i := 0; i < 2; i++ {
 		<-closeChan
 	}
-	s.DelTCPRequest(targetAddr.String())
+	s.DelTCPRequest(req.TargetAddr.String())
 }
 
 //Concurrently TCP traffic transport with 3 reading timeout
@@ -98,7 +118,7 @@ func (s *TCPConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int
 		log.Printf("[ID:%v]failed to format address.", s.ID())
 	}
 	msg := make([]byte, 0)
-	msg = append(msg, byte(VERSION))
+	msg = append(msg, byte(SOCKS5VERSION))
 	msg = append(msg, byte(resp))
 	msg = append(msg, byte(0))
 	msg = append(msg, addrATYP)
@@ -110,57 +130,56 @@ func (s *TCPConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int
 		log.Printf("[ID:%v]%v", s.ID(), err)
 	}
 }
-func (s *TCPConn) getUsernamPassword(conn net.Conn) bool {
+func (s *TCPConn) resolveUserPwd(conn net.Conn) (user, pwd string, err error) {
 	verByte := make([]byte, 1)
 	n, err := conn.Read(verByte)
 	if err != nil || n == 0 {
-		panic(err)
+		return "", "", ERR_READ_USR_PWD
 	}
 	if uint(verByte[0]) != 1 {
-		panic(verByte)
+		return "", "", ERR_READ_USR_PWD
 	}
 	ulenByte := make([]byte, 1)
 	n, err = conn.Read(ulenByte)
 	if err != nil || n == 0 {
-		panic(err)
+		return "", "", ERR_READ_USR_PWD
 	}
 	if uint(ulenByte[0]) < 1 {
-		panic(ulenByte)
+		return "", "", ERR_READ_USR_PWD
 	}
 	unameByte := make([]byte, uint(ulenByte[0]))
 	n, err = conn.Read(unameByte)
 	if err != nil || n == 0 {
-		panic(err)
+		return "", "", ERR_READ_USR_PWD
 	}
-	uname := string(unameByte)
+	user = string(unameByte)
+
 	plen := make([]byte, 1)
 	n, err = conn.Read(plen)
 	if err != nil || n == 0 {
-		panic(err)
+		return "", "", ERR_READ_USR_PWD
 	}
 	if uint(plen[0]) < 1 {
-		panic(plen)
+		return "", "", ERR_READ_USR_PWD
 	}
 	passwdByte := make([]byte, uint(plen[0]))
 	n, err = conn.Read(passwdByte)
 	if err != nil || n == 0 {
-		panic(err)
+		return "", "", ERR_READ_USR_PWD
 	}
-	passwd := string(passwdByte)
-	log.Printf("user:%v\rpassed:%v\n", uname, passwd)
-
-	return true
+	pwd = string(passwdByte)
+	return user, pwd, nil
 }
-func (s *TCPConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAddr, err error) {
+func (s *TCPConn) resolveAddress(conn net.Conn, req *TCPRequest) (err error) {
 	//address types
 	var IP net.IP
-	switch atyp {
+	switch req.atyp {
 	case int(atypIPV4):
 		log.Printf("[ID:%v]ADDRESS TYPE: IP V4 address <- %v\n", s.ID(), conn.RemoteAddr())
 		dstAddrBytes := make([]byte, 4)
 		_, err := conn.Read(dstAddrBytes)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		IP = net.IP(dstAddrBytes)
 	case int(atypFQDN):
@@ -168,17 +187,17 @@ func (s *TCPConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAdd
 		hostLenByte := make([]byte, 1)
 		_, err := conn.Read(hostLenByte)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		hostBytes := make([]byte, int(hostLenByte[0]))
 		_, err = conn.Read(hostBytes)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		domain := string(hostBytes)
 		IPAddrs, err := s.server.hostResolver.LookupIPAddr(context.Background(), domain)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		IP = IPAddrs[0].IP
 	case int(atypIPV6):
@@ -186,19 +205,19 @@ func (s *TCPConn) getDstTCPAddr(conn net.Conn, atyp int) (targetAddr *net.TCPAdd
 		dstAddrBytes := make([]byte, 16)
 		_, err := conn.Read(dstAddrBytes)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		IP = net.IP(dstAddrBytes)
 	default:
-		return nil, errors.New("Unknow address type.")
+		return ERR_ADDRESS_TYPE
 	}
 	dstPortBytes := make([]byte, 2)
 	_, err = conn.Read(dstPortBytes)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dstPort := int(dstPortBytes[0])<<8 + int(dstPortBytes[1])
-	targetAddr = &net.TCPAddr{
+	req.TargetAddr = &net.TCPAddr{
 		IP:   IP,
 		Port: dstPort,
 		Zone: "",

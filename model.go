@@ -18,12 +18,7 @@ type Server struct {
 	lock          sync.RWMutex
 	TCPRequestMap map[string]*TCPRequest
 	hostResolver  *net.Resolver
-}
-
-func GenerateTCPRequestKey(clientAddr, targetAddr *net.TCPAddr) string {
-	//key=client ip + remote addr
-	s := fmt.Sprintf("%v|%v", clientAddr.IP.String(), targetAddr.String())
-	return s
+	Auth          Socks5Auth
 }
 
 var DNSAddrs = []string{
@@ -34,7 +29,7 @@ var DNSAddrs = []string{
 	"123.125.81.6:53"}
 
 func NewSocks5Server() *Server {
-	s := Server{}
+	s := &Server{}
 	s.TCPRequestMap = make(map[string]*TCPRequest)
 	s.lock = sync.RWMutex{}
 	s.hostResolver = &net.Resolver{
@@ -53,10 +48,12 @@ func NewSocks5Server() *Server {
 			return nil, nil
 		},
 	}
-	//TCP SERVER
+	//auth
+	//todo
+
 	//UDP SERVER
 	go s.UDPServer()
-	return &s
+	return s
 }
 func (s *Server) UDPServer() {
 	expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", "0.0.0.0", 0))
@@ -96,17 +93,12 @@ type TCPConn struct {
 }
 
 //NewTCPRequest Add new connect request
-func (s *TCPConn) NewTCPRequest(conn, targetConn net.Conn) *TCPRequest {
+func (s *TCPConn) NewTCPRequest(conn net.Conn, req *TCPRequest) *TCPRequest {
 	s.server.lock.Lock()
 	defer s.server.lock.Unlock()
-	targetAddrStr := targetConn.RemoteAddr().(*net.TCPAddr).String()
+	targetAddrStr := req.TargetConn.RemoteAddr().(*net.TCPAddr).String()
 	if s.server.TCPRequestMap[targetAddrStr] == nil {
-		s.server.TCPRequestMap[targetAddrStr] = &TCPRequest{
-			TargetAddr: targetConn.RemoteAddr().(*net.TCPAddr),
-			clientAddr: conn.RemoteAddr().(*net.TCPAddr),
-			clientConn: conn,
-			TargetConn: targetConn,
-		}
+		s.server.TCPRequestMap[targetAddrStr] = req
 	}
 	return s.server.TCPRequestMap[targetAddrStr]
 }
@@ -119,9 +111,6 @@ func (s *TCPConn) DelTCPRequest(targetAddr string) {
 	if request != nil {
 		if request.TargetConn != nil {
 			request.TargetConn.Close()
-		}
-		if request.clientConn != nil {
-			request.clientConn.Close()
 		}
 	}
 	delete(s.server.TCPRequestMap, targetAddr)
@@ -165,6 +154,8 @@ type UDPRequest struct {
 type TCPRequest struct {
 	TargetAddr *net.TCPAddr
 	clientAddr *net.TCPAddr
-	clientConn net.Conn
+	//clientConn net.Conn
 	TargetConn net.Conn
+	atyp       int
+	cmd        int
 }

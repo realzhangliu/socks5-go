@@ -11,7 +11,7 @@ Feature 🎯
 =======
 The package has the following features:
 - [x] "No Auth" mode
-- [x] User/Password authentication mode
+- [ ] User/Password authentication mode
 - [x] Support for the **CONNECT** command
 - [x] Support for the **BIND** command(require the client to accept connections from the server,like FTP etc.)
 - [x] Support for the **UDP ASSOCIATE** command
