@@ -18,7 +18,7 @@ type Server struct {
 	lock          sync.RWMutex
 	TCPRequestMap map[string]*TCPRequest
 	hostResolver  *net.Resolver
-	Auth          Socks5Auth
+	Conf          Config
 }
 
 var DNSAddrs = []string{
@@ -28,8 +28,13 @@ var DNSAddrs = []string{
 	"101.226.4.6:53",
 	"123.125.81.6:53"}
 
-func NewSocks5Server() *Server {
+//new socks5 proxy server and start UDP listening,include multiple DNS server for resolve host ip
+func NewSocks5Server(config Config) *Server {
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	s := &Server{}
+	if config == nil {
+		s.Conf = newDefConfig()
+	}
 	s.TCPRequestMap = make(map[string]*TCPRequest)
 	s.lock = sync.RWMutex{}
 	s.hostResolver = &net.Resolver{
@@ -48,14 +53,34 @@ func NewSocks5Server() *Server {
 			return nil, nil
 		},
 	}
-	//auth
-	//todo
-
 	//UDP SERVER
-	go s.UDPServer()
+	go s.startUDPServer()
 	return s
 }
-func (s *Server) UDPServer() {
+
+//Start Server listening,once connection accept,server will not close the conn until client close.
+func (s *Server) Listen() error {
+	//TCP SERVER
+	listener, err := net.Listen("tcp", ":"+s.Conf.GetPort())
+	if err != nil {
+		return err
+	}
+	log.Printf("listening on :%v", listener.Addr())
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		tConn := &TCPConn{
+			server:  s,
+			tcpConn: conn.(*net.TCPConn),
+		}
+		s.conn = append(s.conn, tConn)
+		go tConn.ServConn(conn)
+	}
+}
+
+func (s *Server) startUDPServer() {
 	expectedAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%v:%v", "0.0.0.0", 0))
 	if err != nil {
 		panic(err)

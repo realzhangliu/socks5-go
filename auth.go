@@ -4,11 +4,14 @@ type Socks5Auth interface {
 	Authenticate(...interface{}) bool
 }
 
-type Authenticate struct {
+type defAuth struct {
 	userInfo map[string]string
 }
 
-func (s *Authenticate) Authenticate(b ...interface{}) bool {
+func (s *defAuth) Authenticate(b ...interface{}) bool {
+	if s.userInfo == nil {
+		return true
+	}
 	if len(b) != 2 {
 		return false
 	}
@@ -25,7 +28,7 @@ func (s *Authenticate) Authenticate(b ...interface{}) bool {
 	}
 	return false
 }
-func (s *Authenticate) LoadUserInfo(fn func() map[string]string) {
+func (s *defAuth) LoadUserInfo(fn func() map[string]string) {
 	s.userInfo = fn()
 }
 

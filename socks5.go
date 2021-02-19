@@ -5,9 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	_ "net/http/pprof"
-	"os"
 	"time"
 )
 
@@ -84,12 +82,16 @@ func (s *TCPConn) authHandle(conn net.Conn) error {
 				return err
 			}
 
-			if !s.server.Auth.Authenticate(user, pwd) {
+			if !s.server.Conf.Authenticate(user, pwd) {
 				return ERR_AUTH_FAILED
 			}
 
-			//success
-			closeBytes := make([]byte, 0)
+			/*+----+--------+
+			|VER | STATUS |
+			+----+--------+
+			| 1 | 1 |
+			+----+--------+*/
+			closeBytes := []byte{}
 			closeBytes = append(closeBytes, byte(1))
 			closeBytes = append(closeBytes, byte(0))
 			conn.Write(closeBytes)
@@ -98,6 +100,11 @@ func (s *TCPConn) authHandle(conn net.Conn) error {
 		}
 		//NO AUTH
 		if v == 0 {
+			if s.server.Conf.HasAuth() {
+				b := []byte{5}
+				b = append(b, byte(2))
+				conn.Write(b)
+			}
 			log.Printf("[ID:%v]AUTHENTICATION:NO AUTHEN <- %v\n", s.ID(), conn.RemoteAddr())
 			b := []byte{5}
 			b = append(b, byte(0))
@@ -185,39 +192,5 @@ func (s *TCPConn) ServConn(conn net.Conn) {
 				time.Sleep(time.Second * 10)
 			}
 		}
-	}
-}
-
-func Launch() {
-	defer func() {
-		if err := recover(); err != nil {
-			log.Printf("Recovering from panic in parsing error is %v: \n", err)
-		}
-	}()
-	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	socks5Server := NewSocks5Server()
-	var listener net.Listener
-	var err error
-	//TCP SERVER
-	listener, err = net.Listen("tcp", ":0")
-	if err != nil {
-		panic(err)
-	}
-
-	log.Printf("listening on :%v", listener.Addr())
-	go func() {
-		log.Println(http.ListenAndServe("localhost:8866", nil))
-	}()
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			os.Exit(1)
-		}
-		s := &TCPConn{
-			server:  socks5Server,
-			tcpConn: conn.(*net.TCPConn),
-		}
-		socks5Server.conn = append(socks5Server.conn, s)
-		go s.ServConn(conn)
 	}
 }

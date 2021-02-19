@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+//support for CMD BIND
 func (s *TCPConn) HandleBIND(conn net.Conn, req *TCPRequest) {
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -31,6 +32,8 @@ func (s *TCPConn) HandleBIND(conn net.Conn, req *TCPRequest) {
 	}
 	s.DelTCPRequest(req.TargetAddr.String())
 }
+
+//support for CMD CONNECT
 func (s *TCPConn) HandleCONNECT(conn net.Conn, req *TCPRequest) {
 	targetConn, err := s.DialTCP(req.TargetAddr)
 	if err != nil {
@@ -52,7 +55,7 @@ func (s *TCPConn) HandleCONNECT(conn net.Conn, req *TCPRequest) {
 func (s *TCPConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan error) {
 	go func() {
 		limit := TCPRETRY
-		remoteConn.SetReadDeadline(time.Now().Add(time.Second * 3))
+		remoteConn.SetReadDeadline(time.Time{})
 		for {
 			n, err := io.Copy(clientConn, remoteConn)
 			if err == nil {
@@ -73,7 +76,7 @@ func (s *TCPConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 	}()
 	go func() {
 		limit := TCPRETRY
-		clientConn.SetReadDeadline(time.Now().Add(time.Second * 3))
+		clientConn.SetReadDeadline(time.Time{})
 		for {
 			n, err := io.Copy(remoteConn, clientConn)
 			if err == nil {
@@ -130,6 +133,14 @@ func (s *TCPConn) sendReply(conn net.Conn, addrIP net.IP, addrPort int, resp int
 		log.Printf("[ID:%v]%v", s.ID(), err)
 	}
 }
+
+/*
++----+------+----------+------+----------+
+ |VER | ULEN | UNAME | PLEN | PASSWD |
+ +----+------+----------+------+----------+
+ | 1 | 1 | 1 to 255 | 1 | 1 to 255 |
+ +----+------+----------+------+----------+
+*/
 func (s *TCPConn) resolveUserPwd(conn net.Conn) (user, pwd string, err error) {
 	verByte := make([]byte, 1)
 	n, err := conn.Read(verByte)
