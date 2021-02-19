@@ -10,7 +10,8 @@ Advantages👍
 =======
 - A painless host service
 - Support UDP ASSOCIATE (game network accelerator)
-
+![SSTAP](https://raw.githubusercontent.com/realzhangliu/socks5-go/dev/misc/sstap.jpg)
+  
 
 Feature 🎯
 =======
