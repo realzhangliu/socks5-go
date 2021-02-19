@@ -22,15 +22,19 @@ The package has the following features:
 - [x] Support for the **UDP ASSOCIATE** command
 - [ ] Unit tests
 
+Download📶
+=======
+Get the latest version on [**Release**](https://github.com/realzhangliu/socks5-go/releases)
+
 Start😀
 =======
 Port only
 ```shell
-./socks5 1080
+./socks5g 1080
 ```
 Port and Username/Password
 ```shell
-./socks5 1080 admin 123
+./socks5g 1080 admin 123
 ```
 
 Example 👌
