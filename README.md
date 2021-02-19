@@ -6,18 +6,52 @@ Inspired by go-socks5,This package provides full functionality of [socks5 protoc
 
 >The protocol described here is designed to provide a framework for client-server applications in both the TCP and UDP domains to conveniently and securely use the services of a network firewall.
 
+Advantages👍
+=======
+- A painless host service
+- Support UDP ASSOCIATE (game network accelerator)
+
 
 Feature 🎯
 =======
 The package has the following features:
 - [x] "No Auth" mode
-- [ ] User/Password authentication mode
+- [x] User/Password authentication mode
 - [x] Support for the **CONNECT** command
 - [x] Support for the **BIND** command(require the client to accept connections from the server,like FTP etc.)
 - [x] Support for the **UDP ASSOCIATE** command
 - [ ] Unit tests
-- [ ] Graceful configuration
-- [ ] Support for  Web UI
+
+Start😀
+=======
+Port only
+```shell
+./socks5 1080
+```
+Port and Username/Password
+```shell
+./socks5 1080 admin 123
+```
 
 Example 👌
 =======
+```shell 
+go get github.com/soimort/you-get
+```
+```go
+package main
+
+import (
+	"github.com/realzhangliu/socks5-go"
+	"log"
+)
+
+func main() {
+	//var config socks5.Config
+	//Implement yourself Config , default is provided.
+	S5Server := socks5.NewSocks5Server(nil)
+	log.Println(S5Server.Listen())
+}
+
+
+```

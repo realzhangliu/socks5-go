@@ -5,7 +5,7 @@ import (
 	"regexp"
 )
 
-//Implement your self  Config , default is provided.
+//Implement yourself  Config , default is provided.
 type Config interface {
 	GetPort() string //server listen port
 	HasAuth() bool   //auth status (noAuth or user/pwd)
