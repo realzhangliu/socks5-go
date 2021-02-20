@@ -41,7 +41,7 @@ Port and Username/Password
 Example 👌
 =======
 ```shell 
-go get github.com/soimort/you-get
+go get github.com/realzhangliu/socks5-go
 ```
 ```go
 package main
