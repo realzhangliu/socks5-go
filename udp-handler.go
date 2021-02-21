@@ -66,6 +66,9 @@ func TrimHeader(dataBuf *bytes.Buffer) (frag byte, dstIP *net.IP, dstPort int) {
 	}
 	//ATYP
 	atyp, err := dataBuf.ReadByte()
+	if err != nil {
+		return
+	}
 	switch int(atyp) {
 	case int(atypIPV4):
 		//ipv4
@@ -133,8 +136,8 @@ func (s *Server) UDPTransport(relayConn *net.UDPConn, clientAddr *net.UDPAddr, b
 	if err != nil {
 		return
 	}
-	//rAddrChan <- TargetConn.LocalAddr().(*net.UDPAddr)
 	//if request is existed
+	s.lock.Lock()
 	if s.UDPRequestMap[clientAddr.String()] == nil {
 		s.UDPRequestMap[clientAddr.String()] = &UDPRequest{
 			clientAddr:      clientAddr,
@@ -144,6 +147,7 @@ func (s *Server) UDPTransport(relayConn *net.UDPConn, clientAddr *net.UDPAddr, b
 			position:        0,
 		}
 	}
+	s.lock.Unlock()
 	request := s.UDPRequestMap[clientAddr.String()]
 	//UDPRequestChan <- request
 	LaunchReplyChan := make(chan struct{})
@@ -166,7 +170,9 @@ func (s *Server) UDPTransport(relayConn *net.UDPConn, clientAddr *net.UDPAddr, b
 			relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientAddr)
 			log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", v.remoteAddr, n, v.clientAddr)
 		}
+		s.lock.Lock()
 		delete(s.UDPRequestMap, v.clientAddr.String())
+		s.lock.Unlock()
 	}(request)
 	<-LaunchReplyChan
 

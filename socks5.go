@@ -125,7 +125,7 @@ func (s *TCPConn) ServConn(conn net.Conn) {
 
 	//version
 	verByte := []byte{0}
-	n, err := conn.Read(verByte)
+	_, err := conn.Read(verByte)
 	if err != nil {
 		log.Println(ERR_READ_FAILED)
 		return
@@ -143,7 +143,7 @@ func (s *TCPConn) ServConn(conn net.Conn) {
 
 	//request
 	headBytes := make([]byte, 4)
-	n, err = conn.Read(headBytes)
+	n, err := conn.Read(headBytes)
 	if err != nil || n == 0 {
 		return
 	}
