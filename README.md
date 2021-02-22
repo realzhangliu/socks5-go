@@ -29,13 +29,17 @@ Get the latest version on [**Release**](https://github.com/realzhangliu/socks5-g
 
 Start😀
 =======
-Port only
+you may need to add run permission first
 ```shell
-./socks5g 1080
+chmod +x socks5g-linux-amd64
+```
+Port only(No Auth)
+```shell
+./socks5g-linux-amd64 1080
 ```
 Port and Username/Password
 ```shell
-./socks5g 1080 admin 123
+./socks5g-linux-amd64 1080 admin 123
 ```
 
 Example 👌
