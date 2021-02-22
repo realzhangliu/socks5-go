@@ -14,7 +14,7 @@ import (
 
 type Server struct {
 	*Socks5UDPserver
-	conn          []*TCPConn
+	//conn          []*TCPConn
 	lock          sync.RWMutex
 	TCPRequestMap map[string]*TCPRequest
 	hostResolver  *net.Resolver
@@ -65,7 +65,7 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("listening on :%v", listener.Addr())
+	log.Printf("TCP SERVER IS LISTENING ON %v", listener.Addr())
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -75,7 +75,7 @@ func (s *Server) Listen() error {
 			server:  s,
 			tcpConn: conn.(*net.TCPConn),
 		}
-		s.conn = append(s.conn, tConn)
+		//s.conn = append(s.conn, tConn)
 		go tConn.ServConn(conn)
 	}
 }
@@ -94,6 +94,8 @@ func (s *Server) startUDPServer() {
 		udpConn:       relayConn,
 		UDPRequestMap: make(map[string]*UDPRequest),
 	}
+	defer relayConn.Close()
+	log.Printf("UDP SERVER IS LISTENING ON %v", relayConn.LocalAddr())
 	for {
 		b := make([]byte, MAXUDPDATA)
 		n, clientAddr, err := relayConn.ReadFromUDP(b)
@@ -118,7 +120,7 @@ type TCPConn struct {
 }
 
 //NewTCPRequest Add new connect request
-func (s *TCPConn) NewTCPRequest(conn net.Conn, req *TCPRequest) *TCPRequest {
+func (s *TCPConn) NewTCPRequest(req *TCPRequest) *TCPRequest {
 	s.server.lock.Lock()
 	defer s.server.lock.Unlock()
 	targetAddrStr := req.TargetConn.RemoteAddr().(*net.TCPAddr).String()

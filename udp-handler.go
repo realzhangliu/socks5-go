@@ -160,17 +160,18 @@ func (s *Server) UDPTransport(relayConn *net.UDPConn, clientAddr *net.UDPAddr, b
 			n, _, err := request.remoteConn.ReadFromUDP(b)
 			if n == 0 {
 				if err != nil {
-					if err == io.EOF || strings.Contains(err.Error(), "timeout") {
+					if err == io.EOF || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "closed") {
 						break
 					}
 				}
-				time.Sleep(time.Second * 3)
+				continue
 			}
 			dataBuf := AssembleHeader(b[:n], v.clientAddr)
 			relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientAddr)
 			log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", v.remoteAddr, n, v.clientAddr)
 		}
 		s.lock.Lock()
+		request.remoteConn.Close()
 		delete(s.UDPRequestMap, v.clientAddr.String())
 		s.lock.Unlock()
 	}(request)

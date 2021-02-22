@@ -24,7 +24,7 @@ func (s *TCPConn) HandleBIND(conn net.Conn, req *TCPRequest) {
 	}
 	//sec reply
 	s.sendReply(conn, targetConn.RemoteAddr().(*net.TCPAddr).IP, targetConn.RemoteAddr().(*net.TCPAddr).Port, 0)
-	s.NewTCPRequest(conn, req)
+	s.NewTCPRequest(req)
 	closeChan := make(chan error, 2)
 	s.TCPTransport(conn, targetConn, closeChan)
 	for i := 0; i < 2; i++ {
@@ -41,7 +41,7 @@ func (s *TCPConn) HandleCONNECT(conn net.Conn, req *TCPRequest) {
 		return
 	}
 	req.TargetConn = targetConn
-	s.NewTCPRequest(conn, req)
+	s.NewTCPRequest(req)
 	closeChan := make(chan error, 2)
 	s.TCPTransport(conn, targetConn, closeChan)
 	s.sendReply(conn, targetConn.LocalAddr().(*net.TCPAddr).IP, targetConn.LocalAddr().(*net.TCPAddr).Port, 0)
@@ -65,7 +65,7 @@ func (s *TCPConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 				}
 				log.Printf("[ID:%v][TCP]remote:%v send %v bytes -> client:%v\n", s.ID(), remoteConn.RemoteAddr(), n, clientConn.RemoteAddr())
 			} else {
-				if err == io.EOF || strings.Contains(err.Error(), "timeout") || limit <= 0 {
+				if err == io.EOF || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "closed") || limit <= 0 {
 					closeChan <- err
 					return
 				}
@@ -86,7 +86,7 @@ func (s *TCPConn) TCPTransport(clientConn, remoteConn net.Conn, closeChan chan e
 				}
 				log.Printf("[ID:%v][TCP]client:%v send %v bytes -> remote:%v\n", s.ID(), clientConn.RemoteAddr(), n, remoteConn.RemoteAddr())
 			} else {
-				if err == io.EOF || strings.Contains(err.Error(), "timeout") || limit <= 0 {
+				if err == io.EOF || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "closed") || limit <= 0 {
 					closeChan <- err
 					return
 				}
