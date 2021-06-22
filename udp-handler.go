@@ -166,7 +166,7 @@ func (s *Server) UDPTransport(relayConn *net.UDPConn, clientAddr *net.UDPAddr, b
 				}
 				continue
 			}
-			dataBuf := AssembleHeader(b[:n], v.clientAddr)
+			dataBuf := AssembleHeader(b[:n], v.remoteAddr)
 			relayConn.WriteMsgUDP(dataBuf.Bytes(), nil, v.clientAddr)
 			log.Printf("[UDP]remote:%v send %v bytes -> client:%v\n", v.remoteAddr, n, v.clientAddr)
 		}
