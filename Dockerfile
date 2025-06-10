@@ -1,5 +1,5 @@
 # 构建阶段
-FROM golang:1.19-alpine AS builder
+FROM golang:tip-alpine3.21 AS builder
 
 WORKDIR /app
 
