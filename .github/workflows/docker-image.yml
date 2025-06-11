@@ -31,7 +31,5 @@ jobs:
     # 推送镜像到 GHCR
     - name: Push the Docker image
       run: |
-        IMAGE_NAME=ghcr.io/${{ github.repository }}
-        TIMESTAMP=$(date +%s)
         docker push $IMAGE_NAME:$TIMESTAMP
         docker push $IMAGE_NAME:latest
