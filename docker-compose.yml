@@ -5,7 +5,8 @@ services:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    image: socks5-go:v0.2.1
+    # image: socks5-go:v0.2.1
+    image: docker pull ghcr.io/realzhangliu/socks5-go:latest
     container_name: socks5-go
     ports:
       - "1080:1080/tcp"  # SOCKS5 TCP端口
