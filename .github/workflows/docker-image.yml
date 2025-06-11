@@ -22,14 +22,17 @@ jobs:
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
     # 构建 Docker 镜像，打上时间戳和 latest 两个标签
-    - name: Build the Docker image
+    - name: Build  Push the Docker image
       run: |
         IMAGE_NAME=ghcr.io/${{ github.repository }}
         TIMESTAMP=$(date +%s)
+
+        echo "Image: $IMAGE_NAME"
+        echo "Tag: $TIMESTAMP"
+
         docker build . -f Dockerfile -t $IMAGE_NAME:$TIMESTAMP -t $IMAGE_NAME:latest
 
-    # 推送镜像到 GHCR
-    - name: Push the Docker image
-      run: |
         docker push $IMAGE_NAME:$TIMESTAMP
         docker push $IMAGE_NAME:latest
+
+
