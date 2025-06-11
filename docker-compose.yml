@@ -2,9 +2,9 @@ version: '3.8'
 
 services:
   socks5-go:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     image: socks5-go:v0.2.1
     container_name: socks5-go
     ports:
