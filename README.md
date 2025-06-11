@@ -50,7 +50,9 @@ Port and Username/Password
 Start with Docker 😘
 =======
 modify the docker-compose.yml file, changing environment variables SOCKS5_PORT,SOCKS5_USER,SOCKS5_PASSWORD to the values you want.
-```shell 
+```shell
+git pull https://github.com/realzhangliu/socks5-go.git
+cd socks5-go
 docker-compose up -d
 ```
 
